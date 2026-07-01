@@ -153,6 +153,22 @@ function completeContact(){ const v=villages.find(x=>x.id===selectedVillageId); 
 function cancelContact(key){ if(currentUser.role!=='admin') return alert('관리자만 연락완료를 취소할 수 있습니다.'); const [round, idxText]=String(key).split('|'); const idx=Number(idxText); const v=villages.find(x=>x.id===selectedVillageId); if(!v) return alert('마을을 다시 선택하세요.'); const r=rec(v,round); const item=allContactEntries(r)[idx]; if(!item || item.canceled) return alert('취소할 연락완료 기록을 찾지 못했습니다.'); const reason=prompt('취소 사유를 입력하세요.', '잘못 누름') || '사유 미입력'; item.canceled=true; item.cancelBy=currentUser.name; item.cancelAt=now(); item.cancelReason=reason; syncContactSummary(r); r.history.push({type:'연락완료 취소',user:currentUser.name,at:item.cancelAt,text:`${round} / ${v.eup} ${v.village} / ${item.user} 기록 취소 / ${reason}`}); save('villages',villages); drawDialog(v); renderContact(); alert('취소 이력으로 기록되었습니다.'); }
 function vcardEscape(s){ return String(s||'').replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\n/g,'\\n'); }
 function downloadBlob(filename, content, type){ const blob=new Blob([content],{type}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href); a.remove();},0); }
+function isAndroid(){ return /Android/i.test(navigator.userAgent||''); }
+function openAndroidContactInsert(displayName, phone){
+  const intent='intent://contacts/people/#Intent;action=android.intent.action.INSERT;type=vnd.android.cursor.dir/contact;S.name='+encodeURIComponent(displayName)+';S.phone='+encodeURIComponent(phone)+';end';
+  window.location.href=intent;
+}
+function openVcfFile(filename, vcf){
+  const blob=new Blob([vcf],{type:'text/vcard;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download=filename;
+  a.target='_blank';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(()=>{URL.revokeObjectURL(url); a.remove();},1500);
+}
 async function saveChiefContact(){
   const v=villages.find(x=>x.id===selectedVillageId);
   if(!v) return alert('마을을 다시 선택하세요.');
@@ -171,15 +187,28 @@ async function saveChiefContact(){
     'END:VCARD'
   ].join('\r\n');
   const filename=(`${v.eup}_${v.village}_이장_${v.chief||'연락처'}.vcf`).replace(/[\\/:*?"<>|\s]+/g,'_');
+
+  if(isAndroid()){
+    const ok=confirm('연락처 저장 화면을 바로 열까요?\n\n저장 화면이 열리면 우측 상단의 저장 버튼을 눌러주세요.');
+    if(ok){
+      openAndroidContactInsert(displayName, phone);
+      setTimeout(()=>{
+        if(confirm('연락처 저장 화면이 열리지 않았다면 VCF 파일로 저장하시겠습니까?')) openVcfFile(filename, vcf);
+      },1200);
+      return;
+    }
+  }
+
   try{
     const file=new File([vcf], filename, {type:'text/vcard;charset=utf-8'});
     if(navigator.canShare && navigator.canShare({files:[file]})){
       await navigator.share({files:[file], title:displayName, text:'이장님 연락처를 저장합니다.'});
       return;
     }
-  }catch(e){ /* 파일 공유 미지원 시 다운로드로 진행 */ }
-  downloadBlob(filename, '\ufeff'+vcf, 'text/vcard;charset=utf-8');
-  alert('연락처 파일을 만들었습니다. 다운로드된 VCF 파일을 열어 휴대폰 연락처에 저장하세요.');
+  }catch(e){ /* 파일 공유 미지원 시 VCF 열기 */ }
+
+  openVcfFile(filename, '\ufeff'+vcf);
+  alert('연락처 파일을 열었습니다. 휴대폰에서 연락처 저장 또는 가져오기를 선택해 주세요.');
 }
 function saveNote(){ const v=villages.find(x=>x.id===selectedVillageId); if(!v) return alert('마을을 다시 선택하세요.'); const r=rec(v), text=$('noteInput').value.trim(), important=$('noteImportantCheck').checked; if(r.note && currentUser.role!=='admin' && r.noteBy!==currentUser.name) return alert('특이사항은 작성자 또는 관리자만 수정할 수 있습니다.'); if(r.note!==text || !!r.noteImportant!==!!important){ r.note=text; r.noteImportant=!!important; r.noteBy=text?currentUser.name:''; r.noteAt=text?now():''; r.history.push({type:important?'중요 특이사항 저장':'특이사항 저장',user:currentUser.name,at:now(),text:text||'내용 삭제'}); save('villages',villages); } drawDialog(v); renderContact(); alert('저장되었습니다.'); }
 
