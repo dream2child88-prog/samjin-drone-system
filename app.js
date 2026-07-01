@@ -1,10 +1,11 @@
+// fixed: avoid global name conflict with Supabase CDN
 'use strict';
 const $ = id => document.getElementById(id);
 const LS = 'drone_contact_rebuilt_v1_';
 const REMOTE_KEYS = ['users','villages','visibleRounds','uploadHistory'];
 const REMOTE_TABLE = 'app_state';
 const REMOTE_ID = 'main';
-let supabase = null;
+let supabaseClient = null;
 let remoteReady = false;
 let remoteLoading = false;
 let remoteSaveTimer = null;
@@ -12,7 +13,7 @@ let remoteSavePending = false;
 let remoteChannel = null;
 try {
   if (window.SAMJIN_SUPABASE && window.SAMJIN_SUPABASE.url && window.SAMJIN_SUPABASE.key && window.supabase) {
-    supabase = window.supabase.createClient(window.SAMJIN_SUPABASE.url, window.SAMJIN_SUPABASE.key);
+    supabaseClient = window.supabase.createClient(window.SAMJIN_SUPABASE.url, window.SAMJIN_SUPABASE.key);
   }
 } catch (e) { console.error(e); }
 const roundOrder = ['1차 방제','2차 방제','3차 방제'];
@@ -47,10 +48,10 @@ function load(k, fallback){ try{ const v = localStorage.getItem(LS+k); return v 
 function save(k, v){ localStorage.setItem(LS+k, JSON.stringify(v)); if(REMOTE_KEYS.includes(k)) scheduleRemoteSave(); }
 function remoteSnapshot(){ return {users, villages, visibleRounds, uploadHistory, updatedAt: new Date().toISOString()}; }
 function applyRemoteSnapshot(data){ if(!data || typeof data !== 'object') return; if(Array.isArray(data.users)) users = data.users; if(Array.isArray(data.villages)) villages = data.villages.map(migrateVillage); if(Array.isArray(data.visibleRounds)) visibleRounds = data.visibleRounds; if(Array.isArray(data.uploadHistory)) uploadHistory = data.uploadHistory; localStorage.setItem(LS+'users', JSON.stringify(users)); localStorage.setItem(LS+'villages', JSON.stringify(villages)); localStorage.setItem(LS+'visibleRounds', JSON.stringify(visibleRounds)); localStorage.setItem(LS+'uploadHistory', JSON.stringify(uploadHistory)); }
-function scheduleRemoteSave(){ if(!supabase || !remoteReady || remoteLoading) return; remoteSavePending = true; clearTimeout(remoteSaveTimer); remoteSaveTimer = setTimeout(saveRemoteNow, 350); }
-async function saveRemoteNow(){ if(!supabase || !remoteReady || !remoteSavePending || remoteLoading) return; remoteSavePending = false; const payload = remoteSnapshot(); const { error } = await supabase.from(REMOTE_TABLE).upsert({ id: REMOTE_ID, data: payload, updated_at: new Date().toISOString() }); if(error) showError('실시간 저장 오류: '+error.message); }
-async function loadRemoteState(){ if(!supabase) return; remoteLoading = true; const { data, error } = await supabase.from(REMOTE_TABLE).select('data').eq('id', REMOTE_ID).maybeSingle(); if(error){ remoteLoading = false; showError('Supabase 연결 오류: '+error.message); return; } if(data && data.data){ applyRemoteSnapshot(data.data); } else { await supabase.from(REMOTE_TABLE).upsert({ id: REMOTE_ID, data: remoteSnapshot(), updated_at: new Date().toISOString() }); } remoteReady = true; remoteLoading = false; }
-function subscribeRemote(){ if(!supabase || remoteChannel) return; remoteChannel = supabase.channel('samjin-app-state').on('postgres_changes', {event:'*', schema:'public', table:REMOTE_TABLE, filter:'id=eq.'+REMOTE_ID}, payload=>{ if(payload && payload.new && payload.new.data){ remoteLoading = true; applyRemoteSnapshot(payload.new.data); remoteLoading = false; render(); } }).subscribe(); }
+function scheduleRemoteSave(){ if(!supabaseClient || !remoteReady || remoteLoading) return; remoteSavePending = true; clearTimeout(remoteSaveTimer); remoteSaveTimer = setTimeout(saveRemoteNow, 350); }
+async function saveRemoteNow(){ if(!supabaseClient || !remoteReady || !remoteSavePending || remoteLoading) return; remoteSavePending = false; const payload = remoteSnapshot(); const { error } = await supabaseClient.from(REMOTE_TABLE).upsert({ id: REMOTE_ID, data: payload, updated_at: new Date().toISOString() }); if(error) showError('실시간 저장 오류: '+error.message); }
+async function loadRemoteState(){ if(!supabaseClient) return; remoteLoading = true; const { data, error } = await supabaseClient.from(REMOTE_TABLE).select('data').eq('id', REMOTE_ID).maybeSingle(); if(error){ remoteLoading = false; showError('Supabase 연결 오류: '+error.message); return; } if(data && data.data){ applyRemoteSnapshot(data.data); } else { await supabaseClient.from(REMOTE_TABLE).upsert({ id: REMOTE_ID, data: remoteSnapshot(), updated_at: new Date().toISOString() }); } remoteReady = true; remoteLoading = false; }
+function subscribeRemote(){ if(!supabaseClient || remoteChannel) return; remoteChannel = supabaseClient.channel('samjin-app-state').on('postgres_changes', {event:'*', schema:'public', table:REMOTE_TABLE, filter:'id=eq.'+REMOTE_ID}, payload=>{ if(payload && payload.new && payload.new.data){ remoteLoading = true; applyRemoteSnapshot(payload.new.data); remoteLoading = false; render(); } }).subscribe(); }
 function showError(msg){ const el=$('errorBox'); if(!el) return; el.classList.remove('hidden'); el.textContent=msg; }
 function importOldUsers(){ try{ const x = JSON.parse(localStorage.getItem('users') || 'null'); return Array.isArray(x) ? x : null; }catch(e){ return null; } }
 function importOldVillages(){ try{ const x = JSON.parse(localStorage.getItem('villages') || 'null'); return Array.isArray(x) ? x : null; }catch(e){ return null; } }
@@ -84,7 +85,7 @@ function towns(){ const set = new Set(villages.map(v=>v.eup)); return [...townOr
 async function init(){
   $('todayText').textContent = new Date().toLocaleDateString('ko-KR',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
   bind();
-  if(supabase){ await loadRemoteState(); subscribeRemote(); } else { showError('Supabase 설정이 없습니다. config.js에 URL과 Publishable Key를 입력하세요. 현재는 이 기기 안에서만 저장됩니다.'); }
+  if(supabaseClient){ await loadRemoteState(); subscribeRemote(); } else { showError('Supabase 설정이 없습니다. config.js에 URL과 Publishable Key를 입력하세요. 현재는 이 기기 안에서만 저장됩니다.'); }
   persistAll(); render();
 }
 function bind(){
