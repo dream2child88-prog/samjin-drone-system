@@ -2,7 +2,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const LS = 'drone_contact_rebuilt_v1_';
-const REMOTE_KEYS = ['users','villages','visibleRounds','uploadHistory','years','activeYear','roundOrder','roundOrderByYear','visibleRoundsByYear','briefings'];
+const REMOTE_KEYS = ['users','villages','visibleRounds','uploadHistory','years','activeYear','roundOrder','roundOrderByYear','visibleRoundsByYear','briefings','beeFarmers','beeMappings','beeUploadHistory'];
 const REMOTE_TABLE = 'app_state';
 const REMOTE_ID = 'main';
 let supabaseClient = null;
@@ -46,6 +46,9 @@ let users = load('users', null) || importOldUsers() || defaultUsers;
 let villages = (load('villages', null) || importOldVillages() || defaultVillages).map(migrateVillage);
 let uploadHistory = load('uploadHistory', null) || [];
 let briefings = load('briefings', null) || {};
+let beeFarmers = load('beeFarmers', null) || [];
+let beeMappings = load('beeMappings', null) || {};
+let beeUploadHistory = load('beeUploadHistory', null) || [];
 let currentUser = load('currentUser', null);
 let selectedRound = load('selectedRound', '');
 let selectedTown = load('selectedTown', '');
@@ -54,8 +57,8 @@ let editingVillageId = '';
 let editingUserId = '';
 function load(k, fallback){ try{ const v = localStorage.getItem(LS+k); return v ? JSON.parse(v) : fallback; }catch(e){ return fallback; } }
 function save(k, v){ localStorage.setItem(LS+k, JSON.stringify(v)); if(REMOTE_KEYS.includes(k)) scheduleRemoteSave(); }
-function remoteSnapshot(){ syncYearContext(); return {users, villages, years, activeYear, roundOrderByYear, visibleRoundsByYear, visibleRounds, uploadHistory, briefings, updatedAt: new Date().toISOString()}; }
-function applyRemoteSnapshot(data){ if(!data || typeof data !== 'object') return; if(Array.isArray(data.users)) users = data.users; if(Array.isArray(data.years)) years = data.years.map(String); if(data.activeYear) activeYear = String(data.activeYear); if(data.roundOrderByYear && typeof data.roundOrderByYear==='object') roundOrderByYear = data.roundOrderByYear; if(data.visibleRoundsByYear && typeof data.visibleRoundsByYear==='object') visibleRoundsByYear = data.visibleRoundsByYear; if(Array.isArray(data.visibleRounds) && !visibleRoundsByYear[activeYear]) visibleRoundsByYear[activeYear] = data.visibleRounds; syncYearContext(); if(Array.isArray(data.villages)) villages = data.villages.map(migrateVillage); if(Array.isArray(data.uploadHistory)) uploadHistory = data.uploadHistory; if(data.briefings && typeof data.briefings==='object') briefings = data.briefings; localStorage.setItem(LS+'users', JSON.stringify(users)); localStorage.setItem(LS+'villages', JSON.stringify(villages)); localStorage.setItem(LS+'years', JSON.stringify(years)); localStorage.setItem(LS+'activeYear', JSON.stringify(activeYear)); localStorage.setItem(LS+'roundOrderByYear', JSON.stringify(roundOrderByYear)); localStorage.setItem(LS+'visibleRoundsByYear', JSON.stringify(visibleRoundsByYear)); localStorage.setItem(LS+'visibleRounds', JSON.stringify(visibleRounds)); localStorage.setItem(LS+'uploadHistory', JSON.stringify(uploadHistory)); localStorage.setItem(LS+'briefings', JSON.stringify(briefings)); }
+function remoteSnapshot(){ syncYearContext(); return {users, villages, years, activeYear, roundOrderByYear, visibleRoundsByYear, visibleRounds, uploadHistory, briefings, beeFarmers, beeMappings, beeUploadHistory, updatedAt: new Date().toISOString()}; }
+function applyRemoteSnapshot(data){ if(!data || typeof data !== 'object') return; if(Array.isArray(data.users)) users = data.users; if(Array.isArray(data.years)) years = data.years.map(String); if(data.activeYear) activeYear = String(data.activeYear); if(data.roundOrderByYear && typeof data.roundOrderByYear==='object') roundOrderByYear = data.roundOrderByYear; if(data.visibleRoundsByYear && typeof data.visibleRoundsByYear==='object') visibleRoundsByYear = data.visibleRoundsByYear; if(Array.isArray(data.visibleRounds) && !visibleRoundsByYear[activeYear]) visibleRoundsByYear[activeYear] = data.visibleRounds; syncYearContext(); if(Array.isArray(data.villages)) villages = data.villages.map(migrateVillage); if(Array.isArray(data.uploadHistory)) uploadHistory = data.uploadHistory; if(data.briefings && typeof data.briefings==='object') briefings = data.briefings; if(Array.isArray(data.beeFarmers)) beeFarmers = data.beeFarmers; if(data.beeMappings && typeof data.beeMappings==='object') beeMappings = data.beeMappings; if(Array.isArray(data.beeUploadHistory)) beeUploadHistory = data.beeUploadHistory; localStorage.setItem(LS+'users', JSON.stringify(users)); localStorage.setItem(LS+'villages', JSON.stringify(villages)); localStorage.setItem(LS+'years', JSON.stringify(years)); localStorage.setItem(LS+'activeYear', JSON.stringify(activeYear)); localStorage.setItem(LS+'roundOrderByYear', JSON.stringify(roundOrderByYear)); localStorage.setItem(LS+'visibleRoundsByYear', JSON.stringify(visibleRoundsByYear)); localStorage.setItem(LS+'visibleRounds', JSON.stringify(visibleRounds)); localStorage.setItem(LS+'uploadHistory', JSON.stringify(uploadHistory)); localStorage.setItem(LS+'briefings', JSON.stringify(briefings)); localStorage.setItem(LS+'beeFarmers', JSON.stringify(beeFarmers)); localStorage.setItem(LS+'beeMappings', JSON.stringify(beeMappings)); localStorage.setItem(LS+'beeUploadHistory', JSON.stringify(beeUploadHistory)); }
 function scheduleRemoteSave(){ if(!supabaseClient || !remoteReady || remoteLoading) return; remoteSavePending = true; clearTimeout(remoteSaveTimer); remoteSaveTimer = setTimeout(saveRemoteNow, 350); }
 async function saveRemoteNow(){ if(!supabaseClient || !remoteReady || !remoteSavePending || remoteLoading) return; remoteSavePending = false; const payload = remoteSnapshot(); const { error } = await supabaseClient.from(REMOTE_TABLE).upsert({ id: REMOTE_ID, data: payload, updated_at: new Date().toISOString() }); if(error) showError('실시간 저장 오류: '+error.message); }
 async function loadRemoteState(){ if(!supabaseClient) return; remoteLoading = true; const { data, error } = await supabaseClient.from(REMOTE_TABLE).select('data').eq('id', REMOTE_ID).maybeSingle(); if(error){ remoteLoading = false; showError('Supabase 연결 오류: '+error.message); return; } if(data && data.data){ applyRemoteSnapshot(data.data); } else { await supabaseClient.from(REMOTE_TABLE).upsert({ id: REMOTE_ID, data: remoteSnapshot(), updated_at: new Date().toISOString() }); } remoteReady = true; remoteLoading = false; }
@@ -75,7 +78,7 @@ function migrateVillage(v){
   if(v.status || v.completedBy || v.note){ Object.assign(base.rounds[roundOrder[0] || '1차 방제'], {status:v.status||'pending', completedBy:v.completedBy||'', completedAt:v.completedAt||'', completedList:v.completedBy?[{user:v.completedBy, at:v.completedAt||''}]:[], note:v.note||'', noteBy:v.noteBy||'', noteAt:v.noteAt||'', history:Array.isArray(v.history)?v.history:[]}); }
   return base;
 }
-function persistAll(){ syncYearContext(); save('users', users); save('villages', villages); save('years', years); save('activeYear', activeYear); save('roundOrderByYear', roundOrderByYear); save('visibleRoundsByYear', visibleRoundsByYear); save('visibleRounds', visibleRounds); save('uploadHistory', uploadHistory); save('briefings', briefings); if(currentUser) save('currentUser', currentUser); }
+function persistAll(){ syncYearContext(); save('users', users); save('villages', villages); save('years', years); save('activeYear', activeYear); save('roundOrderByYear', roundOrderByYear); save('visibleRoundsByYear', visibleRoundsByYear); save('visibleRounds', visibleRounds); save('uploadHistory', uploadHistory); save('briefings', briefings); save('beeFarmers', beeFarmers); save('beeMappings', beeMappings); save('beeUploadHistory', beeUploadHistory); if(currentUser) save('currentUser', currentUser); }
 function uid(){ return 'v' + Date.now() + Math.random().toString(36).slice(2,7); }
 function safe(s){ return String(s ?? '').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function norm(s){ return String(s||'').trim().toLowerCase().replace(/\s+/g,''); }
@@ -112,7 +115,7 @@ function bind(){
   $('villageList').onclick=e=>{ const card=e.target.closest('[data-village]'); if(card) openVillage(card.dataset.village); };
   $('closeDialogBtn').onclick=()=>{$('villageDialog').close();}; $('completeBtn').onclick=completeContact; const saveChiefBtn=$('saveChiefContactBtn'); if(saveChiefBtn) saveChiefBtn.onclick=saveChiefContact; $('saveNoteBtn').onclick=saveNote; $('contactHistoryList').onclick=e=>{ const btn=e.target.closest('[data-cancel-contact]'); if(btn) cancelContact(btn.dataset.cancelContact); }; const quickBox=$('quickMessageBox'); if(quickBox) quickBox.onclick=e=>{ const btn=e.target.closest('[data-quick-message]'); if(btn) sendQuickMessage(btn.dataset.quickMessage); };
   $('saveRoundVisibilityBtn').onclick=saveRoundVisibility; $('saveVillageBtn').onclick=saveVillage; $('clearVillageFormBtn').onclick=clearVillageForm; $('saveUserBtn').onclick=saveUser; $('clearUserFormBtn').onclick=clearUserForm; $('importVillageBtn').onclick=importVillageFile; $('downloadTemplateBtn').onclick=downloadVillageTemplate; $('exportVillageBtn').onclick=exportVillages;
-  $('villageTable').onclick=e=>{ const edit=e.target.closest('[data-edit-village]'); const del=e.target.closest('[data-delete-village]'); if(edit) editVillage(edit.dataset.editVillage); if(del) deleteVillage(del.dataset.deleteVillage); };
+  if($('importBeeBtn')) $('importBeeBtn').onclick=importBeeFile; if($('downloadBeeTemplateBtn')) $('downloadBeeTemplateBtn').onclick=downloadBeeTemplate; if($('exportBeeBtn')) $('exportBeeBtn').onclick=exportBeeFarmers; if($('beeMatchTable')) $('beeMatchTable').onclick=handleBeeMatchClick; if($('beeTable')) $('beeTable').onclick=handleBeeTableClick; if($('beeSearchInput')) $('beeSearchInput').oninput=renderBeeTable; if($('beeSelectAllCheck')) $('beeSelectAllCheck').onchange=toggleBeeSelectAll; if($('deleteSelectedBeeBtn')) $('deleteSelectedBeeBtn').onclick=deleteSelectedBeeFarmers; const dbl=$('dialogBeeList'); if(dbl) dbl.onclick=handleDialogBeeClick; $('villageTable').onclick=e=>{ const edit=e.target.closest('[data-edit-village]'); const del=e.target.closest('[data-delete-village]'); if(edit) editVillage(edit.dataset.editVillage); if(del) deleteVillage(del.dataset.deleteVillage); };
   $('userTable').onclick=e=>{ const edit=e.target.closest('[data-edit-user]'); const del=e.target.closest('[data-delete-user]'); if(edit) editUser(edit.dataset.editUser); if(del) deleteUser(del.dataset.deleteUser); };
   if($('activeYearSelect')) $('activeYearSelect').onchange=changeActiveYear; if($('createYearBtn')) $('createYearBtn').onclick=createNewYear; if($('addRoundBtn')) $('addRoundBtn').onclick=addRound; if($('roundManageTable')) $('roundManageTable').onclick=handleRoundManageClick; if($('briefingRoundSelect')) $('briefingRoundSelect').onchange=loadBriefingForm; if($('saveBriefingBtn')) $('saveBriefingBtn').onclick=saveBriefingForm; if($('dialogBriefingBox')){ $('dialogBriefingBox').onchange=handleChecklistClick; $('dialogBriefingBox').onclick=handleChecklistClick; }
 }
@@ -132,7 +135,7 @@ function renderContact(){ renderContactBriefing(); if(selectedRound && !visible(
 function renderRoundView(){ $('roundView').classList.remove('hidden'); $('townView').classList.add('hidden'); $('villageView').classList.add('hidden'); $('breadcrumb').classList.add('hidden'); const list=visible(); $('roundList').innerHTML=list.length?list.map(r=>{ const s=stats(villages,r); return `<article class="card town-card" data-round="${safe(r)}"><div class="town-name">${safe(r)}</div><div class="town-stats"><span class="badge done">완료 ${s.done}</span><span class="badge pending">미연락 ${s.pending}</span>${s.note?`<span class="badge note">특이사항 ${s.note}</span>`:''}</div><div class="progress"><span style="width:${s.rate}%"></span></div><div class="meta">전체 ${s.total}개 마을 · 완료율 ${s.rate}%</div></article>`; }).join(''):'<div class="card">관리자가 공개한 차수가 없습니다.</div>'; }
 function notePreviewForTown(t){ const notes=villages.filter(v=>v.eup===t).map(v=>({v,r:rec(v)})).filter(x=>x.r.note).slice(0,3); if(!notes.length) return ''; return `<div class="note-preview-list">${notes.map(x=>`<div class="note-preview-row ${isImportantNote(x.r)?'important':''}"><strong>${safe(x.v.village)}</strong> ${safe(x.r.note)}</div>`).join('')}${stats(villages.filter(v=>v.eup===t)).note>3?'<div class="meta">외 특이사항 더 있음</div>':''}</div>`; }
 function renderTownView(){ $('roundView').classList.add('hidden'); $('townView').classList.remove('hidden'); $('villageView').classList.add('hidden'); $('breadcrumb').classList.remove('hidden'); $('breadcrumb').textContent=activeYear + '년 · ' + selectedRound; const fv=filteredVillages(); const wf=$('workerFilter') ? $('workerFilter').value : 'all'; const townItems=towns().filter(t=>wf==='all'||fv.some(v=>v.eup===t)); $('townList').innerHTML=townItems.map(t=>{ const list=villages.filter(v=>v.eup===t), shown=fv.filter(v=>v.eup===t), s=stats(fv.filter(v=>v.eup===t).length?fv.filter(v=>v.eup===t):list); return `<article class="card town-card" data-town="${safe(t)}"><div class="town-name">${safe(t)}</div><div class="town-stats"><span class="badge done">완료 ${s.done}</span><span class="badge pending">미연락 ${s.pending}</span>${s.note?`<span class="badge note">특이사항 ${s.note}</span>`:''}</div><div class="progress"><span style="width:${s.rate}%"></span></div><div class="meta">전체 ${s.total}개 마을 · 완료율 ${s.rate}%${shown.length!==list.length?` · 검색결과 ${shown.length}개`:''}</div>${notePreviewForTown(t)}</article>`; }).join('') || '<div class="card">등록된 마을이 없습니다.</div>'; }
-function renderVillageView(){ $('roundView').classList.add('hidden'); $('townView').classList.add('hidden'); $('villageView').classList.remove('hidden'); $('breadcrumb').classList.remove('hidden'); $('breadcrumb').textContent=`${activeYear}년 · ${selectedRound} > ${selectedTown}`; const all=villages.filter(v=>v.eup===selectedTown), s=stats(all); $('selectedTownTitle').textContent=selectedTown; $('selectedTownDesc').textContent=`전체 ${s.total}개 · 완료 ${s.done} · 미연락 ${s.pending} · 특이사항 ${s.note} · 완료율 ${s.rate}%`; const list=filteredVillages().filter(v=>v.eup===selectedTown); $('villageList').innerHTML=list.length?list.map(v=>{ const r=rec(v); return `<article class="card village-card" data-village="${safe(v.id)}"><div class="village-title"><strong>${safe(v.village)}</strong><span class="badge ${r.status==='done'?'done':'pending'}">${r.status==='done'?'완료':'미연락'}</span></div><div class="chief">이장님: ${safe(v.chief)}</div><div class="meta">연락처: ${safe(v.phone)}</div><div class="meta">담당 방제사: ${safe(contactNames(r)||'연락 전')}</div>${lastContactAt(r)?`<div class="meta">최근 연락 완료: ${safe(lastContactAt(r))}</div>`:''}${r.note?`<div class="note-card ${isImportantNote(r)?'important':''}"><div class="note-card-title">${isImportantNote(r)?'중요 특이사항':'특이사항'}</div><div>${safe(r.note)}</div><div class="meta">작성: ${safe(r.noteBy||'-')} · ${safe(r.noteAt||'-')}</div></div>`:''}</article>`; }).join(''):'<div class="card">조건에 맞는 마을이 없습니다.</div>'; }
+function renderVillageView(){ $('roundView').classList.add('hidden'); $('townView').classList.add('hidden'); $('villageView').classList.remove('hidden'); $('breadcrumb').classList.remove('hidden'); $('breadcrumb').textContent=`${activeYear}년 · ${selectedRound} > ${selectedTown}`; const all=villages.filter(v=>v.eup===selectedTown), s=stats(all); $('selectedTownTitle').textContent=selectedTown; $('selectedTownDesc').textContent=`전체 ${s.total}개 · 완료 ${s.done} · 미연락 ${s.pending} · 특이사항 ${s.note} · 완료율 ${s.rate}%`; const list=filteredVillages().filter(v=>v.eup===selectedTown); $('villageList').innerHTML=list.length?list.map(v=>{ const r=rec(v); return `<article class="card village-card" data-village="${safe(v.id)}"><div class="village-title"><strong>${safe(v.village)}</strong><span class="badge ${r.status==='done'?'done':'pending'}">${r.status==='done'?'완료':'미연락'}</span></div><div class="chief">이장님: ${safe(v.chief)}</div><div class="meta">연락처: ${safe(v.phone)}</div>${beeCountForVillage(v.id)?`<div class="meta bee-meta">🐝 양봉농가 ${beeCountForVillage(v.id)}곳</div>`:''}<div class="meta">담당 방제사: ${safe(contactNames(r)||'연락 전')}</div>${lastContactAt(r)?`<div class="meta">최근 연락 완료: ${safe(lastContactAt(r))}</div>`:''}${r.note?`<div class="note-card ${isImportantNote(r)?'important':''}"><div class="note-card-title">${isImportantNote(r)?'중요 특이사항':'특이사항'}</div><div>${safe(r.note)}</div><div class="meta">작성: ${safe(r.noteBy||'-')} · ${safe(r.noteAt||'-')}</div></div>`:''}</article>`; }).join(''):'<div class="card">조건에 맞는 마을이 없습니다.</div>'; }
 function openVillage(id){ const v=villages.find(x=>x.id===id); if(!v) return; selectedVillageId=id; const r=rec(v); $('dialogTitle').textContent=`${activeYear}년 · ${selectedRound} · ${v.eup} ${v.village}`; $('dialogSub').textContent=`담당 방제사: ${contactNames(r)||'연락 전'}`; $('chiefName').textContent=v.chief; $('chiefPhone').textContent=v.phone; $('assignedDisplay').textContent=contactNames(r)||'연락 전'; $('callBtn').href='tel:'+v.phone.replace(/[^0-9]/g,''); $('noteInput').value=r.note||''; $('noteImportantCheck').checked=!!r.noteImportant; drawDialog(v); $('villageDialog').showModal(); }
 function drawDialog(v){
   const r=rec(v);
@@ -141,6 +144,7 @@ function drawDialog(v){
   $('dialogSub').textContent=`담당 방제사: ${contactNames(r)||'연락 전'}`;
   $('assignedDisplay').textContent=contactNames(r)||'연락 전';
   renderDialogBriefing(v);
+  renderDialogBees(v);
   const contacts=[];
   roundOrder.forEach(round=>{
     const rr=rec(v,round);
@@ -216,6 +220,21 @@ function saveNote(){ const v=villages.find(x=>x.id===selectedVillageId); if(!v) 
 
 function setQuickMessageStatus(text){ const el=$('quickMessageStatus'); if(el) el.textContent=text||''; }
 function cleanPhone(phone){ return String(phone||'').replace(/[^0-9]/g,''); }
+function kakaoMapUrl(query){
+  const q=String(query||'').trim();
+  return q ? 'https://map.kakao.com/link/search/' + encodeURIComponent(q) : '#';
+}
+function beeMapQuery(b){
+  const parts=[];
+  if(b.parcel) parts.push(b.parcel);
+  else {
+    if(b.eup) parts.push(b.eup);
+    if(b.ri) parts.push(b.ri);
+    if(b.location) parts.push(b.location);
+  }
+  return parts.join(' ').trim() || b.location || '';
+}
+
 function getCurrentLocationLink(){
   return new Promise((resolve,reject)=>{
     if(!navigator.geolocation) return reject(new Error('이 기기에서는 위치 기능을 사용할 수 없습니다.'));
@@ -357,7 +376,7 @@ function deleteRound(name){
   if(selectedRound===name){ selectedRound=''; selectedTown=''; }
   roundOrderByYear[activeYear]=roundOrder; visibleRoundsByYear[activeYear]=visibleRounds; persistAll(); renderContact(); renderAdmin(); alert('삭제되었습니다.');
 }
-function renderAdmin(){ if(!currentUser || currentUser.role!=='admin') return; syncYearContext(); renderYearManager(); renderRoundManager(); renderBriefingAdmin(); $('roundVisibilityList').innerHTML=roundOrder.map(r=>`<label><input type="checkbox" value="${safe(r)}" ${visibleRounds.includes(r)?'checked':''}> ${safe(r)}</label>`).join(''); $('roundVisibilityStatus').textContent=`${activeYear}년 현재 공개: `+(visible().join(', ')||'없음'); renderUploadHistory(); renderChiefChangeHistory(); renderVillageTable(); renderUserTable(); }
+function renderAdmin(){ if(!currentUser || currentUser.role!=='admin') return; syncYearContext(); renderYearManager(); renderRoundManager(); renderBriefingAdmin(); $('roundVisibilityList').innerHTML=roundOrder.map(r=>`<label><input type="checkbox" value="${safe(r)}" ${visibleRounds.includes(r)?'checked':''}> ${safe(r)}</label>`).join(''); $('roundVisibilityStatus').textContent=`${activeYear}년 현재 공개: `+(visible().join(', ')||'없음'); renderUploadHistory(); renderChiefChangeHistory(); renderVillageTable(); renderBeeAdmin(); renderUserTable(); }
 function saveRoundVisibility(){ visibleRounds=[...$('roundVisibilityList').querySelectorAll('input:checked')].map(x=>x.value); visibleRoundsByYear[activeYear]=visibleRounds; save('visibleRoundsByYear',visibleRoundsByYear); save('visibleRounds',visibleRounds); if(selectedRound&&!visible().includes(selectedRound)){selectedRound='';selectedTown='';save('selectedRound','');save('selectedTown','');} renderContact(); renderAdmin(); alert('저장되었습니다.'); }
 function renderChiefChangeHistory(){ const el=$('chiefChangeHistoryTable'); if(!el) return; const logs=[]; villages.forEach(v=>(v.chiefHistory||[]).forEach(h=>logs.push({...h,eup:v.eup,village:v.village}))); logs.sort((a,b)=>String(b.at).localeCompare(String(a.at),'ko')); el.innerHTML=`<table><thead><tr><th>변경 일시</th><th>읍면</th><th>마을</th><th>변경 내용</th><th>처리자</th><th>출처</th></tr></thead><tbody>${logs.map(h=>`<tr><td>${safe(h.at)}</td><td>${safe(h.eup)}</td><td>${safe(h.village)}</td><td>${safe(h.oldChief||'-')} → ${safe(h.newChief||'-')}<br><span class="muted">${safe(h.oldPhone||'-')} → ${safe(h.newPhone||'-')}</span></td><td>${safe(h.user)}</td><td>${safe(h.source||'-')}</td></tr>`).join('')||'<tr><td colspan="6">아직 이장 변경 이력이 없습니다.</td></tr>'}</tbody></table>`; }
 function renderVillageTable(){ $('villageTable').innerHTML=`<table><thead><tr><th>읍면</th><th>마을</th><th>이장님</th><th>연락처</th><th>연락자</th><th>관리</th></tr></thead><tbody>${villages.map(v=>`<tr><td>${safe(v.eup)}</td><td>${safe(v.village)}</td><td>${safe(v.chief)}</td><td>${safe(v.phone)}</td><td>${roundOrder.map(r=>`${r}: ${contactNames(rec(v,r))||'-'}`).join('<br>')}</td><td><button class="mini secondary" data-edit-village="${safe(v.id)}">수정</button> <button class="mini danger" data-delete-village="${safe(v.id)}">삭제</button></td></tr>`).join('')||'<tr><td colspan="6">등록된 마을이 없습니다.</td></tr>'}</tbody></table>`; }
@@ -387,3 +406,93 @@ function updateCompleteButtonState(r){ const btn=$('completeBtn'); if(!btn) retu
 
 window.addEventListener('error', e=>{ $('errorBox').classList.remove('hidden'); $('errorBox').textContent='오류: '+(e.message||'알 수 없는 오류'); console.error(e.error||e.message); });
 window.addEventListener('DOMContentLoaded', init);
+
+
+/* ===== 양봉농가 관리 기능 ===== */
+function parcelKey(s){ return String(s||'').trim().replace(/\s+/g,' ').replace(/번지/g,'').replace(/[^0-9A-Za-z가-힣\- ]/g,'').trim(); }
+function parcelNorm(s){ return parcelKey(s).replace(/\s+/g,''); }
+function rowPick(row, names){ for(const n of names){ if(row[n]!==undefined && row[n]!==null && String(row[n]).trim()!=='') return String(row[n]).trim(); } return ''; }
+function normalizeBeeRow(row){ const m={}; Object.keys(row).forEach(k=>m[cleanHeader(k)]=row[k]); const eup=rowPick(m,['읍면','면','지역','행정구역']); const village=rowPick(m,['마을명','마을','리','동리']); const name=rowPick(m,['양봉농가','양봉농가명','양봉인','농가명','성명','이름']); const phone=rowPick(m,['연락처','전화번호','휴대폰','핸드폰']); const parcel=rowPick(m,['주소','지번','토지소재','소재지','위치주소','필지']); const hiveCount=rowPick(m,['벌통수','봉군수','군수','벌통','봉군']); const location=rowPick(m,['위치','상세위치','비고위치','장소']); const note=rowPick(m,['특이사항','비고','주의사항','메모']); if(!eup && !village && !name && !phone && !parcel) return null; if(!name && !phone && !parcel) return null; const cleanParcel=parcelKey(parcel); return {id:uid(), year:activeYear, eup:eup||extractEup(cleanParcel), village, name, phone, parcel:cleanParcel, parcelNorm:parcelNorm(cleanParcel), ri:extractRi(cleanParcel), riBase:extractRiBase(cleanParcel), hiveCount, location, note, villageId:'', matchStatus:'unmatched', matchMemo:'', contacts:{}}; }
+function extractEup(s){ const m=String(s||'').match(/([가-힣]+(?:읍|면|동))/); return m?m[1]:''; }
+function extractRi(s){ const m=String(s||'').match(/([가-힣0-9]+리)/); return m?m[1]:''; }
+function extractRiBase(s){ const ri=extractRi(s); return ri ? ri.replace(/리$/,'') : ''; }
+function villageBaseName(v){ return String(v.village||'').replace(/마을$/,'').replace(/[0-9０-９]/g,'').trim(); }
+function beeRiCandidates(b){ const base=b.riBase||extractRiBase(b.parcel); if(!base) return []; const eup=norm(b.eup||extractEup(b.parcel)); return villages.filter(v=>{ const eupOk=!eup || norm(v.eup)===eup; const vb=norm(villageBaseName(v)); const vn=norm(v.village); const rb=norm(base); return eupOk && (vb===rb || vn.includes(rb) || rb.includes(vb)); }); }
+function matchBeeFarmer(b){ if(b.parcelNorm && beeMappings[b.parcelNorm]){ const v=villages.find(x=>x.id===beeMappings[b.parcelNorm]); if(v){ b.villageId=v.id; b.eup=b.eup||v.eup; b.village=v.village; b.matchStatus='matched'; b.matchMemo='이전 지번 매핑'; return b; } }
+  const cands=beeRiCandidates(b);
+  if(cands.length===1){ const v=cands[0]; b.villageId=v.id; b.eup=b.eup||v.eup; b.village=v.village; b.matchStatus='matched'; b.matchMemo=`주소 리 자동매칭: ${b.ri||b.riBase}`; if(b.parcelNorm) beeMappings[b.parcelNorm]=v.id; return b; }
+  if(cands.length>1){ b.matchStatus='review'; b.matchMemo=`${b.ri||b.riBase} 기준 후보 ${cands.length}건`; return b; }
+  const sameEup=villages.filter(v=>norm(v.eup)===norm(b.eup)); b.matchStatus=sameEup.length?'review':'unmatched'; b.matchMemo=b.ri?`${b.ri}와 연결되는 마을 후보 없음`:'주소에서 ○○리를 찾지 못함'; return b; }
+function beeUniqueKey(b){ return [String(b.year||activeYear), b.parcelNorm||parcelNorm(b.parcel), norm(b.name||'')].join('|'); }
+function mergeBeeFarmer(existing, incoming){
+  const keep={id:existing.id, contacts:existing.contacts||{}, createdAt:existing.createdAt||incoming.createdAt||now()};
+  Object.assign(existing, incoming);
+  existing.id=keep.id;
+  existing.contacts=keep.contacts;
+  existing.createdAt=keep.createdAt;
+  existing.updatedAt=now();
+  return existing;
+}
+async function importBeeFile(){
+  try{
+    const input=$('beeFileInput');
+    const file=input.files&&input.files[0];
+    if(!file) return alert('업로드할 양봉농가 파일을 선택하세요.');
+    const mode=$('beeImportMode') ? $('beeImportMode').value : 'merge';
+    if(mode==='replace' && !confirm('현재 연도의 기존 양봉농가 자료를 전체 교체합니다. 연락완료 이력도 삭제될 수 있습니다. 계속할까요?')) return;
+    $('beeImportStatus').textContent='파일을 읽는 중입니다...';
+    const raw=await readVillageFile(file);
+    const rows=raw.map(normalizeBeeRow).filter(Boolean).map(b=>{ b.createdAt=now(); return matchBeeFarmer(b); });
+    const incomingSeen=new Set();
+    const uniqueRows=[];
+    let duplicateInFile=0;
+    rows.forEach(b=>{
+      const key=beeUniqueKey(b);
+      if(incomingSeen.has(key)){ duplicateInFile++; return; }
+      incomingSeen.add(key);
+      uniqueRows.push(b);
+    });
+    let added=0, updated=0, skipped=0, deleted=0;
+    if(mode==='replace'){
+      deleted=beeFarmers.filter(x=>String(x.year)===String(activeYear)).length;
+      beeFarmers=beeFarmers.filter(x=>String(x.year)!==String(activeYear));
+    }
+    uniqueRows.forEach(row=>{
+      const key=beeUniqueKey(row);
+      const idx=beeFarmers.findIndex(x=>beeUniqueKey(x)===key);
+      if(idx>=0){
+        if(mode==='add') skipped++;
+        else { mergeBeeFarmer(beeFarmers[idx], row); updated++; }
+      } else {
+        beeFarmers.push(row);
+        added++;
+      }
+    });
+    const current=beeFarmers.filter(x=>String(x.year)===String(activeYear));
+    const matched=current.filter(x=>x.matchStatus==='matched').length, review=current.filter(x=>x.matchStatus==='review').length, unmatched=current.filter(x=>x.matchStatus==='unmatched').length;
+    beeUploadHistory.unshift({at:now(), user:currentUser?currentUser.name:'-', file:file.name, mode, total:uniqueRows.length, added, updated, skipped, duplicateInFile, deleted, matched, review, unmatched});
+    save('beeFarmers', beeFarmers); save('beeMappings', beeMappings); save('beeUploadHistory', beeUploadHistory);
+    input.value='';
+    $('beeImportStatus').textContent=`업로드 완료: 신규 ${added}건, 업데이트 ${updated}건, 중복 ${duplicateInFile+skipped}건, 삭제 ${deleted}건 / 현재 자동매칭 ${matched}건, 확인필요 ${review}건, 미매칭 ${unmatched}건`;
+    renderAdmin(); renderContact();
+    alert(`양봉농가 업로드 완료\n신규 추가 ${added}건\n업데이트 ${updated}건\n중복/건너뜀 ${duplicateInFile+skipped}건\n삭제 ${deleted}건`);
+  }catch(err){ console.error(err); $('beeImportStatus').textContent='업로드 오류: '+err.message; alert('업로드 중 오류가 발생했습니다. '+err.message); }
+}
+function beeCountForVillage(villageId){ return beeFarmers.filter(b=>String(b.year)===String(activeYear)&&b.villageId===villageId).length; }
+function beeStats(){ const list=beeFarmers.filter(b=>String(b.year)===String(activeYear)); return {matched:list.filter(b=>b.matchStatus==='matched').length, review:list.filter(b=>b.matchStatus==='review').length, unmatched:list.filter(b=>b.matchStatus==='unmatched').length, total:list.length}; }
+function renderBeeAdmin(){ const s=beeStats(); if($('beeTotalCount')) $('beeTotalCount').textContent=s.total; if($('beeMatchedCount')) $('beeMatchedCount').textContent=s.matched; if($('beeReviewCount')) $('beeReviewCount').textContent=s.review; if($('beeUnmatchedCount')) $('beeUnmatchedCount').textContent=s.unmatched; renderBeeMatchTable(); renderBeeTable(); }
+function villageOptions(selected){ return '<option value="">선택</option>'+villages.map(v=>`<option value="${safe(v.id)}" ${v.id===selected?'selected':''}>${safe(v.eup)} ${safe(v.village)}</option>`).join(''); }
+function renderBeeMatchTable(){ const el=$('beeMatchTable'); if(!el) return; const list=beeFarmers.filter(b=>String(b.year)===String(activeYear)&&b.matchStatus!=='matched'); el.innerHTML=`<table><thead><tr><th>상태</th><th>읍면/마을</th><th>양봉농가</th><th>지번/위치</th><th>연결할 마을</th><th>관리</th></tr></thead><tbody>${list.map(b=>`<tr><td>${b.matchStatus==='review'?'🟡 확인 필요':'🔴 미매칭'}</td><td>${safe(b.eup||'-')} / ${safe(b.village||'-')}</td><td><strong>${safe(b.name||'-')}</strong><br><span class="muted">${safe(b.phone||'-')}</span></td><td>${safe(b.parcel||'-')}<br><span class="muted">${safe(b.location||'')}</span></td><td><select data-bee-select="${safe(b.id)}">${villageOptions(b.villageId)}</select></td><td><button class="mini primary" data-bee-map="${safe(b.id)}">연결 저장</button> <button class="mini danger" data-bee-delete="${safe(b.id)}">삭제</button></td></tr>`).join('')||'<tr><td colspan="6">확인할 미매칭 양봉자료가 없습니다.</td></tr>'}</tbody></table>`; }
+function filteredBeeFarmers(){ const q=norm($('beeSearchInput') ? $('beeSearchInput').value : ''); return beeFarmers.filter(b=>String(b.year)===String(activeYear)).filter(b=>{ if(!q) return true; const v=villages.find(x=>x.id===b.villageId); const text=norm([b.eup, v?.village, b.village, b.name, b.phone, b.parcel, b.location, b.note, b.matchStatus].join(' ')); return text.includes(q); }); }
+function renderBeeTable(){ const el=$('beeTable'); if(!el) return; const list=filteredBeeFarmers(); el.innerHTML=`<table><thead><tr><th><input id="beeSelectAllRows" type="checkbox" onchange="document.querySelectorAll('[data-bee-row-check]').forEach(c=>c.checked=this.checked)"></th><th>상태</th><th>읍면</th><th>마을</th><th>양봉농가</th><th>연락처</th><th>지번/벌통</th><th>특이사항</th><th>관리</th></tr></thead><tbody>${list.map(b=>{ const v=villages.find(x=>x.id===b.villageId); return `<tr><td><input type="checkbox" data-bee-row-check="${safe(b.id)}"></td><td>${b.matchStatus==='matched'?'🟢 자동':(b.matchStatus==='review'?'🟡 확인필요':'🔴 미매칭')}</td><td>${safe(b.eup||v?.eup||'-')}</td><td>${safe(v? v.village : (b.village||'-'))}</td><td>${safe(b.name||'-')}</td><td>${safe(b.phone||'-')}</td><td>${safe(b.parcel||'-')}<br><span class="muted">${safe(b.hiveCount?b.hiveCount+'군':'')}</span></td><td>${safe(b.location||'')}${b.note?'<br>'+safe(b.note):''}</td><td><button class="mini danger" data-bee-delete="${safe(b.id)}">삭제</button></td></tr>`; }).join('')||'<tr><td colspan="9">등록된 양봉농가가 없습니다.</td></tr>'}</tbody></table>`; }
+function handleBeeMatchClick(e){ const map=e.target.closest('[data-bee-map]'); const del=e.target.closest('[data-bee-delete]'); if(del) return deleteBeeFarmer(del.dataset.beeDelete); if(!map) return; const id=map.dataset.beeMap; const b=beeFarmers.find(x=>x.id===id); const sel=document.querySelector(`[data-bee-select="${CSS.escape(id)}"]`); if(!b||!sel||!sel.value) return alert('연결할 마을을 선택하세요.'); const v=villages.find(x=>x.id===sel.value); if(!v) return alert('마을을 찾지 못했습니다.'); b.villageId=v.id; b.eup=v.eup; b.village=v.village; b.matchStatus='matched'; b.matchMemo='관리자 수동 연결'; if(b.parcelNorm) beeMappings[b.parcelNorm]=v.id; save('beeFarmers', beeFarmers); save('beeMappings', beeMappings); renderAdmin(); renderContact(); alert('저장되었습니다. 같은 지번은 다음 업로드부터 자동 연결됩니다.'); }
+function handleBeeTableClick(e){ const del=e.target.closest('[data-bee-delete]'); if(del) deleteBeeFarmer(del.dataset.beeDelete); }
+function deleteBeeFarmer(id){ const b=beeFarmers.find(x=>x.id===id); if(!b) return; if(confirm(`${b.name||'양봉자료'}를 삭제하시겠습니까?\n\n삭제된 자료는 복구할 수 없습니다.`)){ beeFarmers=beeFarmers.filter(x=>x.id!==id); save('beeFarmers', beeFarmers); renderAdmin(); renderContact(); } }
+function selectedBeeIds(){ return [...document.querySelectorAll('[data-bee-row-check]:checked')].map(x=>x.dataset.beeRowCheck); }
+function toggleBeeSelectAll(){ const checked=$('beeSelectAllCheck').checked; document.querySelectorAll('[data-bee-row-check]').forEach(c=>c.checked=checked); }
+function deleteSelectedBeeFarmers(){ const ids=selectedBeeIds(); if(!ids.length) return alert('삭제할 양봉농가를 선택하세요.'); if(!confirm(`선택한 양봉농가 ${ids.length}건을 삭제하시겠습니까?\n\n삭제된 자료는 복구할 수 없습니다.`)) return; const set=new Set(ids); beeFarmers=beeFarmers.filter(x=>!set.has(x.id)); save('beeFarmers', beeFarmers); renderAdmin(); renderContact(); alert('선택 삭제가 완료되었습니다.'); }
+function downloadBeeTemplate(){ downloadCsv('양봉농가_업로드양식.csv', [['주소','양봉농가','연락처','벌통수','위치','특이사항'], ['경남 창원시 마산합포구 진북면 이목리 327-1','김철수','010-0000-0000','50','저수지 옆','오전 연락 필요']]); }
+function exportBeeFarmers(){ const rows=[['읍면','마을명','주소','리','양봉농가','연락처','벌통수','위치','특이사항','매칭상태','매칭메모']].concat(beeFarmers.filter(b=>String(b.year)===String(activeYear)).map(b=>{ const v=villages.find(x=>x.id===b.villageId); return [b.eup||v?.eup||'', v?.village||b.village||'', b.parcel||'', b.ri||'', b.name||'', b.phone||'', b.hiveCount||'', b.location||'', b.note||'', b.matchStatus||'', b.matchMemo||'']; })); downloadCsv('현재_양봉농가리스트.csv', rows); }
+function renderDialogBees(v){ const box=$('dialogBeeList'), sum=$('dialogBeeSummary'); if(!box) return; const list=beeFarmers.filter(b=>String(b.year)===String(activeYear)&&b.villageId===v.id); const done=list.filter(b=>beeRec(b).done).length; if(sum) sum.textContent=list.length?`양봉농가 ${list.length}곳 · 연락완료 ${done}곳 · 미연락 ${list.length-done}곳`:'등록된 양봉농가가 없습니다.'; box.innerHTML=list.length?list.map(b=>{ const r=beeRec(b); const q=beeMapQuery(b); const mapUrl=kakaoMapUrl(q); const addressText=b.parcel||b.location||'주소 없음'; const mapLink=q?`<a class="map-link" href="${safe(mapUrl)}" target="_blank" rel="noopener">${safe(addressText)} · 카카오지도 열기</a>`:`<span class="map-disabled">${safe(addressText)} · 지도 연결 불가</span>`; const mapButton=q?`<a class="secondary" href="${safe(mapUrl)}" target="_blank" rel="noopener">🗺 카카오지도</a>`:`<button class="secondary" disabled>🗺 주소 없음</button>`; return `<div class="bee-card ${r.done?'done-bee':''}"><div class="bee-card-head"><strong>🐝 ${safe(b.name||'이름 없음')}</strong><span class="badge ${r.done?'done':'pending'}">${r.done?'연락완료':'미연락'}</span></div><div class="meta">☎ ${safe(b.phone||'-')} · 벌통 ${safe(b.hiveCount||'-')}군</div><div class="meta">📍 ${mapLink}</div>${b.location&&b.parcel?`<div class="meta">위치: ${safe(b.location)}</div>`:''}${b.note?`<div class="note-card important"><div class="note-card-title">양봉 특이사항</div>${safe(b.note)}</div>`:''}<div class="action-row bee-actions"><a class="call" href="tel:${safe(cleanPhone(b.phone))}">양봉농가 전화</a>${mapButton}<button class="secondary" data-bee-done-dialog="${safe(b.id)}">${r.done?'연락완료 취소':'양봉 연락완료'}</button></div>${r.done?`<div class="meta">처리: ${safe(r.by||'-')} · ${safe(r.at||'-')}</div>`:''}</div>`; }).join(''):'<div class="status-box">이 마을에 연결된 양봉농가가 없습니다.</div>'; }
+function beeRec(b){ if(!b.contacts||typeof b.contacts!=='object') b.contacts={}; const key=activeYear+'|'+(selectedRound||activeRound()); if(!b.contacts[key]) b.contacts[key]={done:false,by:'',at:''}; return b.contacts[key]; }
+function handleDialogBeeClick(e){ const btn=e.target.closest('[data-bee-done-dialog]'); if(!btn) return; const b=beeFarmers.find(x=>x.id===btn.dataset.beeDoneDialog); if(!b) return; const r=beeRec(b); if(r.done){ if(!confirm('양봉농가 연락완료를 취소할까요?')) return; r.done=false; r.by=''; r.at=''; } else { r.done=true; r.by=currentUser?currentUser.name:'-'; r.at=now(); } save('beeFarmers', beeFarmers); const v=villages.find(x=>x.id===selectedVillageId); if(v) renderDialogBees(v); renderAdmin(); }
