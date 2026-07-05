@@ -2,7 +2,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const LS = 'drone_contact_rebuilt_v1_';
-const REMOTE_KEYS = ['users','villages','visibleRounds','uploadHistory','years','activeYear','roundOrder','roundOrderByYear','visibleRoundsByYear','briefings','beeFarmers','beeMappings','beeUploadHistory'];
+const REMOTE_KEYS = ['users','villages','deletedVillageIds','visibleRounds','uploadHistory','years','activeYear','roundOrder','roundOrderByYear','visibleRoundsByYear','briefings','beeFarmers','beeMappings','beeUploadHistory'];
 const REMOTE_TABLE = 'app_state';
 const REMOTE_ID = 'main';
 let supabaseClient = null;
@@ -11,7 +11,7 @@ let remoteLoading = false;
 let remoteSaveTimer = null;
 let remoteSavePending = false;
 let remoteChannel = null;
-const APP_VERSION = 'v11-emergency-stable';
+const APP_VERSION = 'v13-no-sample-delete-fix';
 const NOTE_VAULT_STORAGE_KEY = LS + 'note_vault_v1';
 const CONTACT_VAULT_STORAGE_KEY = LS + 'contact_vault_v1';
 let noteVault = loadRawNoteVault();
@@ -37,7 +37,8 @@ const defaultUsers = [
   {id:'kim01', name:'김철수', phone:'', password:'1234', role:'worker'},
   {id:'park01', name:'박영수', phone:'', password:'1234', role:'worker'}
 ];
-const defaultVillages = [
+const defaultVillages = [];
+const SAMPLE_VILLAGES = [
   {id:'v001', eup:'진전면', village:'양촌마을', chief:'최성호', phone:'010-4444-4444'},
   {id:'v002', eup:'진전면', village:'오서마을', chief:'강민호', phone:'010-5555-1111'},
   {id:'v003', eup:'진북면', village:'이목마을', chief:'홍길동', phone:'010-1111-1111'},
@@ -47,8 +48,11 @@ const defaultVillages = [
   {id:'v007', eup:'구산면', village:'수정마을', chief:'이성민', phone:'010-5555-3333'},
   {id:'v008', eup:'현동', village:'현동마을', chief:'윤정호', phone:'010-5555-4444'}
 ];
+function isDefaultSampleVillage(v){ return SAMPLE_VILLAGES.some(s=>String(v.id||'')===s.id || (norm(v.eup)===norm(s.eup) && norm(v.village)===norm(s.village) && norm(v.chief)===norm(s.chief) && norm(v.phone)===norm(s.phone))); }
+function cleanupSampleVillages(){ const before=villages.length; villages=villages.filter(v=>!isDefaultSampleVillage(v)); if(before!==villages.length){ localStorage.setItem(LS+'villages', JSON.stringify(villages)); SAMPLE_VILLAGES.forEach(s=>{ if(!deletedVillageIds.includes(s.id)) deletedVillageIds.push(s.id); }); save('deletedVillageIds', deletedVillageIds); } }
 let users = load('users', null) || importOldUsers() || defaultUsers;
 let villages = (load('villages', null) || importOldVillages() || defaultVillages).map(migrateVillage);
+let deletedVillageIds = load('deletedVillageIds', null) || [];
 let uploadHistory = load('uploadHistory', null) || [];
 let briefings = load('briefings', null) || {};
 let beeFarmers = load('beeFarmers', null) || [];
@@ -78,7 +82,8 @@ function persistContactToVault(v, round, r){ if(!v || !r) return; const key=cont
 function restoreContactFromVault(v, round, r){ if(!v || !r) return; const key=contactVaultKey(v, round); const saved=contactVault[key]; if(!saved || !Array.isArray(saved.completedList) || !saved.completedList.length) return; const tmpLocal={completedList:saved.completedList}; mergeContactLists(tmpLocal, r); }
 function hydrateVaultsFromVillages(){ try{ villages.forEach(v=>{ Object.keys(v.roundsByYear||{}).forEach(year=>{ Object.keys(v.roundsByYear[year]||{}).forEach(round=>{ const oldYear=activeYear; activeYear=String(year); const r=v.roundsByYear[year][round]; migrateNoteVersions(r); persistNoteToVault(v, round, r); persistContactToVault(v, round, r); activeYear=oldYear; }); }); }); }catch(e){ console.warn('vault hydrate failed', e); } }
 function restoreProtectedDataToVillages(){ try{ villages=villages.map(v=>{ const out=migrateVillage(v); Object.keys(out.roundsByYear||{}).forEach(year=>{ Object.keys(out.roundsByYear[year]||{}).forEach(round=>{ const oldYear=activeYear; activeYear=String(year); restoreNoteFromVault(out, round, out.roundsByYear[year][round]); restoreContactFromVault(out, round, out.roundsByYear[year][round]); syncContactSummary(out.roundsByYear[year][round]); activeYear=oldYear; }); }); return out; }); localStorage.setItem(LS+'villages', JSON.stringify(villages)); saveRawNoteVault(); saveRawContactVault(); }catch(e){ console.warn('protected restore failed', e); } }
-function remoteSnapshot(){ syncYearContext(); hydrateVaultsFromVillages(); return {users, villages, noteVault, contactVault, years, activeYear, roundOrderByYear, visibleRoundsByYear, visibleRounds, uploadHistory, briefings, beeFarmers, beeMappings, beeUploadHistory, appVersion:APP_VERSION, updatedAt: new Date().toISOString()}; }
+function removeProtectedDataForVillage(v){ try{ Object.keys(noteVault||{}).forEach(k=>{ if(k.split('|')[1]===v.id) delete noteVault[k]; }); Object.keys(contactVault||{}).forEach(k=>{ if(k.split('|')[1]===v.id) delete contactVault[k]; }); saveRawNoteVault(); saveRawContactVault(); }catch(e){ console.warn('remove vault failed', e); } }
+function remoteSnapshot(){ syncYearContext(); cleanupSampleVillages(); hydrateVaultsFromVillages(); return {users, villages, deletedVillageIds, noteVault, contactVault, years, activeYear, roundOrderByYear, visibleRoundsByYear, visibleRounds, uploadHistory, briefings, beeFarmers, beeMappings, beeUploadHistory, appVersion:APP_VERSION, updatedAt: new Date().toISOString()}; }
 function cloneObj(x){ try{return JSON.parse(JSON.stringify(x));}catch(e){return x;} }
 function noteTimeValue(n){ return Date.parse(n.updatedAt||n.deletedAt||n.createdAt||n.editedAt||'') || Number(String(n.id||'').replace(/[^0-9]/g,'')) || 0; }
 function mergeNoteVersions(localR, remoteR){
@@ -129,8 +134,9 @@ function mergeRoundData(localR, remoteR, village, round){
   }
 }
 function mergeRemoteVillages(remoteVillages, localVillages){
-  const localMap=new Map((localVillages||[]).map(v=>[v.id,v]));
-  const merged=(remoteVillages||[]).map(rv=>{
+  const deletedSet=new Set(deletedVillageIds||[]);
+  const localMap=new Map((localVillages||[]).filter(v=>!deletedSet.has(v.id) && !isDefaultSampleVillage(v)).map(v=>[v.id,v]));
+  const merged=(remoteVillages||[]).filter(rv=>!deletedSet.has(rv.id) && !isDefaultSampleVillage(rv)).map(rv=>{
     const out=migrateVillage(cloneObj(rv));
     const lv=localMap.get(out.id);
     if(lv && lv.roundsByYear && out.roundsByYear){
@@ -145,10 +151,10 @@ function mergeRemoteVillages(remoteVillages, localVillages){
     Object.keys(out.roundsByYear||{}).forEach(year=>{ Object.keys(out.roundsByYear[year]||{}).forEach(round=>restoreContactFromVault(out, round, out.roundsByYear[year][round])); });
     return out;
   });
-  (localVillages||[]).forEach(lv=>{ if(!merged.some(v=>v.id===lv.id)) merged.push(migrateVillage(cloneObj(lv))); });
+  (localVillages||[]).forEach(lv=>{ if(!deletedSet.has(lv.id) && !isDefaultSampleVillage(lv) && !merged.some(v=>v.id===lv.id)) merged.push(migrateVillage(cloneObj(lv))); });
   return merged;
 }
-function applyRemoteSnapshot(data){ if(!data || typeof data !== 'object') return; const localVillagesBefore=cloneObj(villages); if(Array.isArray(data.users)) users = data.users; if(Array.isArray(data.years)) years = data.years.map(String); if(data.activeYear) activeYear = String(data.activeYear); if(data.roundOrderByYear && typeof data.roundOrderByYear==='object') roundOrderByYear = data.roundOrderByYear; if(data.visibleRoundsByYear && typeof data.visibleRoundsByYear==='object') visibleRoundsByYear = data.visibleRoundsByYear; if(Array.isArray(data.visibleRounds) && !visibleRoundsByYear[activeYear]) visibleRoundsByYear[activeYear] = data.visibleRounds; syncYearContext(); if(data.noteVault && typeof data.noteVault==='object') mergeNoteVault(data.noteVault); if(data.contactVault && typeof data.contactVault==='object') mergeContactVault(data.contactVault); if(Array.isArray(data.villages)) villages = mergeRemoteVillages(data.villages, localVillagesBefore); if(Array.isArray(data.uploadHistory)) uploadHistory = data.uploadHistory; if(data.briefings && typeof data.briefings==='object') briefings = data.briefings; if(Array.isArray(data.beeFarmers)) beeFarmers = data.beeFarmers; if(data.beeMappings && typeof data.beeMappings==='object') beeMappings = data.beeMappings; if(Array.isArray(data.beeUploadHistory)) beeUploadHistory = data.beeUploadHistory; localStorage.setItem(LS+'users', JSON.stringify(users)); localStorage.setItem(LS+'villages', JSON.stringify(villages)); localStorage.setItem(LS+'years', JSON.stringify(years)); localStorage.setItem(LS+'activeYear', JSON.stringify(activeYear)); localStorage.setItem(LS+'roundOrderByYear', JSON.stringify(roundOrderByYear)); localStorage.setItem(LS+'visibleRoundsByYear', JSON.stringify(visibleRoundsByYear)); localStorage.setItem(LS+'visibleRounds', JSON.stringify(visibleRounds)); localStorage.setItem(LS+'uploadHistory', JSON.stringify(uploadHistory)); localStorage.setItem(LS+'briefings', JSON.stringify(briefings)); localStorage.setItem(LS+'beeFarmers', JSON.stringify(beeFarmers)); localStorage.setItem(LS+'beeMappings', JSON.stringify(beeMappings)); localStorage.setItem(LS+'beeUploadHistory', JSON.stringify(beeUploadHistory)); restoreProtectedDataToVillages(); saveRawNoteVault(); saveRawContactVault(); }
+function applyRemoteSnapshot(data){ if(!data || typeof data !== 'object') return; const localVillagesBefore=cloneObj(villages); if(Array.isArray(data.deletedVillageIds)) deletedVillageIds=[...new Set([...(deletedVillageIds||[]), ...data.deletedVillageIds])]; if(Array.isArray(data.users)) users = data.users; if(Array.isArray(data.years)) years = data.years.map(String); if(data.activeYear) activeYear = String(data.activeYear); if(data.roundOrderByYear && typeof data.roundOrderByYear==='object') roundOrderByYear = data.roundOrderByYear; if(data.visibleRoundsByYear && typeof data.visibleRoundsByYear==='object') visibleRoundsByYear = data.visibleRoundsByYear; if(Array.isArray(data.visibleRounds) && !visibleRoundsByYear[activeYear]) visibleRoundsByYear[activeYear] = data.visibleRounds; syncYearContext(); if(data.noteVault && typeof data.noteVault==='object') mergeNoteVault(data.noteVault); if(data.contactVault && typeof data.contactVault==='object') mergeContactVault(data.contactVault); if(Array.isArray(data.villages)) villages = mergeRemoteVillages(data.villages, localVillagesBefore); if(Array.isArray(data.uploadHistory)) uploadHistory = data.uploadHistory; if(data.briefings && typeof data.briefings==='object') briefings = data.briefings; if(Array.isArray(data.beeFarmers)) beeFarmers = data.beeFarmers; if(data.beeMappings && typeof data.beeMappings==='object') beeMappings = data.beeMappings; if(Array.isArray(data.beeUploadHistory)) beeUploadHistory = data.beeUploadHistory; cleanupSampleVillages(); localStorage.setItem(LS+'users', JSON.stringify(users)); localStorage.setItem(LS+'deletedVillageIds', JSON.stringify(deletedVillageIds)); localStorage.setItem(LS+'villages', JSON.stringify(villages)); localStorage.setItem(LS+'years', JSON.stringify(years)); localStorage.setItem(LS+'activeYear', JSON.stringify(activeYear)); localStorage.setItem(LS+'roundOrderByYear', JSON.stringify(roundOrderByYear)); localStorage.setItem(LS+'visibleRoundsByYear', JSON.stringify(visibleRoundsByYear)); localStorage.setItem(LS+'visibleRounds', JSON.stringify(visibleRounds)); localStorage.setItem(LS+'uploadHistory', JSON.stringify(uploadHistory)); localStorage.setItem(LS+'briefings', JSON.stringify(briefings)); localStorage.setItem(LS+'beeFarmers', JSON.stringify(beeFarmers)); localStorage.setItem(LS+'beeMappings', JSON.stringify(beeMappings)); localStorage.setItem(LS+'beeUploadHistory', JSON.stringify(beeUploadHistory)); restoreProtectedDataToVillages(); saveRawNoteVault(); saveRawContactVault(); }
 function scheduleRemoteSave(){ if(!supabaseClient || !remoteReady || remoteLoading) return; remoteSavePending = true; clearTimeout(remoteSaveTimer); remoteSaveTimer = setTimeout(()=>saveRemoteNow(false), 350); }
 async function saveRemoteNow(force=false){ if(!supabaseClient || !remoteReady || remoteLoading) return false; if(!force && !remoteSavePending) return true; remoteSavePending = false; const payload = remoteSnapshot(); const { data:serverRow, error:fetchError } = await supabaseClient.from(REMOTE_TABLE).select('data').eq('id', REMOTE_ID).maybeSingle(); if(fetchError){ showError('서버 확인 오류: '+fetchError.message); return false; } if(serverRow && serverRow.data){ applyRemoteSnapshot(serverRow.data); } const { error } = await supabaseClient.from(REMOTE_TABLE).upsert({ id: REMOTE_ID, data: remoteSnapshot(), updated_at: new Date().toISOString() }); if(error){ showError('실시간 저장 오류: '+error.message); return false; } return true; }
 async function loadRemoteState(){ if(!supabaseClient) return; remoteLoading = true; const { data, error } = await supabaseClient.from(REMOTE_TABLE).select('data').eq('id', REMOTE_ID).maybeSingle(); if(error){ remoteLoading = false; showError('Supabase 연결 오류: '+error.message); return; } if(data && data.data){ applyRemoteSnapshot(data.data); } else { await supabaseClient.from(REMOTE_TABLE).upsert({ id: REMOTE_ID, data: remoteSnapshot(), updated_at: new Date().toISOString() }); } remoteReady = true; remoteLoading = false; }
@@ -169,7 +175,7 @@ function migrateVillage(v){
   if(v.status || v.completedBy || v.note){ Object.assign(base.rounds[roundOrder[0] || '1차 방제'], {status:v.status||'pending', completedBy:v.completedBy||'', completedAt:v.completedAt||'', completedList:v.completedBy?[{user:v.completedBy, at:v.completedAt||''}]:[], note:v.note||'', noteBy:v.noteBy||'', noteAt:v.noteAt||'', noteImportant:!!v.noteImportant, history:Array.isArray(v.history)?v.history:[]}); migrateNoteVersions(base.rounds[roundOrder[0] || '1차 방제']); }
   return base;
 }
-function persistAll(){ syncYearContext(); save('users', users); save('villages', villages); save('years', years); save('activeYear', activeYear); save('roundOrderByYear', roundOrderByYear); save('visibleRoundsByYear', visibleRoundsByYear); save('visibleRounds', visibleRounds); save('uploadHistory', uploadHistory); save('briefings', briefings); save('beeFarmers', beeFarmers); save('beeMappings', beeMappings); save('beeUploadHistory', beeUploadHistory); if(currentUser) save('currentUser', currentUser); }
+function persistAll(){ syncYearContext(); cleanupSampleVillages(); save('users', users); save('deletedVillageIds', deletedVillageIds); save('villages', villages); save('years', years); save('activeYear', activeYear); save('roundOrderByYear', roundOrderByYear); save('visibleRoundsByYear', visibleRoundsByYear); save('visibleRounds', visibleRounds); save('uploadHistory', uploadHistory); save('briefings', briefings); save('beeFarmers', beeFarmers); save('beeMappings', beeMappings); save('beeUploadHistory', beeUploadHistory); if(currentUser) save('currentUser', currentUser); }
 function uid(){ return 'v' + Date.now() + Math.random().toString(36).slice(2,7); }
 function safe(s){ return String(s ?? '').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function norm(s){ return String(s||'').trim().toLowerCase().replace(/\s+/g,''); }
@@ -242,6 +248,7 @@ function towns(){ const set = new Set(villages.map(v=>v.eup)); return [...townOr
 async function init(){
   syncYearContext();
   villages = villages.map(migrateVillage);
+  cleanupSampleVillages();
   $('todayText').textContent = new Date().toLocaleDateString('ko-KR',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
   bind();
   if(supabaseClient){ await loadRemoteState(); subscribeRemote(); } else { showError('Supabase 설정이 없습니다. config.js에 URL과 Publishable Key를 입력하세요. 현재는 이 기기 안에서만 저장됩니다.'); }
@@ -680,7 +687,7 @@ function renderChiefChangeHistory(){ const el=$('chiefChangeHistoryTable'); if(!
 function renderVillageTable(){ $('villageTable').innerHTML=`<table><thead><tr><th>읍면</th><th>마을</th><th>이장님</th><th>연락처</th><th>연락자</th><th>관리</th></tr></thead><tbody>${villages.map(v=>`<tr><td>${safe(v.eup)}</td><td>${safe(v.village)}</td><td>${safe(v.chief)}</td><td>${safe(v.phone)}</td><td>${roundOrder.map(r=>`${r}: ${contactNames(rec(v,r))||'-'}`).join('<br>')}</td><td><button class="mini secondary" data-edit-village="${safe(v.id)}">수정</button> <button class="mini danger" data-delete-village="${safe(v.id)}">삭제</button></td></tr>`).join('')||'<tr><td colspan="6">등록된 마을이 없습니다.</td></tr>'}</tbody></table>`; }
 function saveVillage(){ const eup=$('adminEup').value.trim(), village=$('adminVillage').value.trim(), chief=$('adminChief').value.trim(), phone=$('adminPhone').value.trim(); if(!eup||!village||!chief||!phone) return alert('읍면, 마을명, 이장님 성함, 연락처를 입력하세요.'); if(editingVillageId){ const v=villages.find(x=>x.id===editingVillageId); v.eup=eup; v.village=village; changeChief(v, chief, phone, '관리자 직접 수정'); } else villages.push(migrateVillage({id:uid(),eup,village,chief,phone})); save('villages',villages); clearVillageForm(); renderContact(); renderAdmin(); alert('저장되었습니다.'); }
 function editVillage(id){ const v=villages.find(x=>x.id===id); if(!v) return; editingVillageId=id; $('adminEup').value=v.eup; $('adminVillage').value=v.village; $('adminChief').value=v.chief; $('adminPhone').value=v.phone; window.scrollTo({top:0,behavior:'smooth'}); }
-function deleteVillage(id){ const v=villages.find(x=>x.id===id); if(v&&confirm(`${v.eup} ${v.village}을 삭제할까요?`)){ villages=villages.filter(x=>x.id!==id); save('villages',villages); renderContact(); renderAdmin(); } }
+async function deleteVillage(id){ const v=villages.find(x=>x.id===id); if(v&&confirm(`${v.eup} ${v.village}을 삭제할까요?\n\n삭제 후 서버에 바로 반영합니다.`)){ if(!deletedVillageIds.includes(id)) deletedVillageIds.push(id); removeProtectedDataForVillage(v); villages=villages.filter(x=>x.id!==id); save('deletedVillageIds',deletedVillageIds); save('villages',villages); const ok=await saveRemoteNow(true); renderContact(); renderAdmin(); alert(ok?'삭제가 서버에 반영되었습니다.':'삭제는 이 기기에 반영됐지만 서버 저장에 실패했습니다. 인터넷 연결 후 다시 시도하세요.'); } }
 function clearVillageForm(){ editingVillageId=''; $('adminEup').value='진전면'; ['adminVillage','adminChief','adminPhone'].forEach(id=>$(id).value=''); }
 function renderUserTable(){ $('userTable').innerHTML=`<table><thead><tr><th>이름</th><th>아이디</th><th>연락처</th><th>권한</th><th>관리</th></tr></thead><tbody>${users.map(u=>`<tr><td>${safe(u.name)}</td><td>${safe(u.id)}</td><td>${safe(u.phone||'-')}</td><td>${u.role==='admin'?'관리자':'방제사'}</td><td><button class="mini secondary" data-edit-user="${safe(u.id)}">수정</button> <button class="mini danger" data-delete-user="${safe(u.id)}" ${u.id==='admin'?'disabled':''}>삭제</button></td></tr>`).join('')}</tbody></table>`; }
 function saveUser(){ const name=$('adminUserName').value.trim(), id=norm($('adminUserId').value), phone=$('adminUserPhone').value.trim(), password=$('adminUserPw').value.trim(), role=$('adminUserRole').value; if(!name||!id||!password) return alert('이름, 아이디, 비밀번호를 입력하세요.'); const dup=users.find(u=>norm(u.id)===id); if(editingUserId){ if(editingUserId!==id && dup) return alert('이미 사용 중인 아이디입니다.'); const u=users.find(x=>x.id===editingUserId); Object.assign(u,{id,name,phone,password,role}); if(currentUser.id===editingUserId){currentUser={id,name,phone,role};save('currentUser',currentUser);} } else { if(dup) return alert('이미 사용 중인 아이디입니다.'); users.push({id,name,phone,password,role}); } save('users',users); clearUserForm(); render(); alert('저장되었습니다.'); }
