@@ -11,6 +11,9 @@ let remoteLoading = false;
 let remoteSaveTimer = null;
 let remoteSavePending = false;
 let remoteChannel = null;
+const APP_VERSION = 'v4-sync-lock';
+const NOTE_VAULT_STORAGE_KEY = LS + 'note_vault_v1';
+let noteVault = loadRawNoteVault();
 try {
   if (window.SAMJIN_SUPABASE && window.SAMJIN_SUPABASE.url && window.SAMJIN_SUPABASE.key && window.supabase) {
     supabaseClient = window.supabase.createClient(window.SAMJIN_SUPABASE.url, window.SAMJIN_SUPABASE.key);
@@ -57,16 +60,59 @@ let editingVillageId = '';
 let editingUserId = '';
 function load(k, fallback){ try{ const v = localStorage.getItem(LS+k); return v ? JSON.parse(v) : fallback; }catch(e){ return fallback; } }
 function save(k, v){ localStorage.setItem(LS+k, JSON.stringify(v)); if(REMOTE_KEYS.includes(k)) scheduleRemoteSave(); }
-function remoteSnapshot(){ syncYearContext(); return {users, villages, years, activeYear, roundOrderByYear, visibleRoundsByYear, visibleRounds, uploadHistory, briefings, beeFarmers, beeMappings, beeUploadHistory, updatedAt: new Date().toISOString()}; }
-function applyRemoteSnapshot(data){ if(!data || typeof data !== 'object') return; if(Array.isArray(data.users)) users = data.users; if(Array.isArray(data.years)) years = data.years.map(String); if(data.activeYear) activeYear = String(data.activeYear); if(data.roundOrderByYear && typeof data.roundOrderByYear==='object') roundOrderByYear = data.roundOrderByYear; if(data.visibleRoundsByYear && typeof data.visibleRoundsByYear==='object') visibleRoundsByYear = data.visibleRoundsByYear; if(Array.isArray(data.visibleRounds) && !visibleRoundsByYear[activeYear]) visibleRoundsByYear[activeYear] = data.visibleRounds; syncYearContext(); if(Array.isArray(data.villages)) villages = data.villages.map(migrateVillage); if(Array.isArray(data.uploadHistory)) uploadHistory = data.uploadHistory; if(data.briefings && typeof data.briefings==='object') briefings = data.briefings; if(Array.isArray(data.beeFarmers)) beeFarmers = data.beeFarmers; if(data.beeMappings && typeof data.beeMappings==='object') beeMappings = data.beeMappings; if(Array.isArray(data.beeUploadHistory)) beeUploadHistory = data.beeUploadHistory; localStorage.setItem(LS+'users', JSON.stringify(users)); localStorage.setItem(LS+'villages', JSON.stringify(villages)); localStorage.setItem(LS+'years', JSON.stringify(years)); localStorage.setItem(LS+'activeYear', JSON.stringify(activeYear)); localStorage.setItem(LS+'roundOrderByYear', JSON.stringify(roundOrderByYear)); localStorage.setItem(LS+'visibleRoundsByYear', JSON.stringify(visibleRoundsByYear)); localStorage.setItem(LS+'visibleRounds', JSON.stringify(visibleRounds)); localStorage.setItem(LS+'uploadHistory', JSON.stringify(uploadHistory)); localStorage.setItem(LS+'briefings', JSON.stringify(briefings)); localStorage.setItem(LS+'beeFarmers', JSON.stringify(beeFarmers)); localStorage.setItem(LS+'beeMappings', JSON.stringify(beeMappings)); localStorage.setItem(LS+'beeUploadHistory', JSON.stringify(beeUploadHistory)); }
-function scheduleRemoteSave(){ if(!supabaseClient || !remoteReady || remoteLoading) return; remoteSavePending = true; clearTimeout(remoteSaveTimer); remoteSaveTimer = setTimeout(saveRemoteNow, 350); }
-async function saveRemoteNow(){ if(!supabaseClient || !remoteReady || !remoteSavePending || remoteLoading) return; remoteSavePending = false; const payload = remoteSnapshot(); const { error } = await supabaseClient.from(REMOTE_TABLE).upsert({ id: REMOTE_ID, data: payload, updated_at: new Date().toISOString() }); if(error) showError('실시간 저장 오류: '+error.message); }
+function loadRawNoteVault(){ try{ return JSON.parse(localStorage.getItem(NOTE_VAULT_STORAGE_KEY)||'{}') || {}; }catch(e){ return {}; } }
+function saveRawNoteVault(){ try{ localStorage.setItem(NOTE_VAULT_STORAGE_KEY, JSON.stringify(noteVault||{})); }catch(e){} }
+function noteVaultKey(v, round){ return [activeYear, v && v.id || '', round || activeRound()].join('|'); }
+function vaultTimeValue(n){ return Date.parse(n && (n.updatedAt||n.deletedAt||n.createdAt||n.editedAt)||'') || Number(n && n.version || 0) || 0; }
+function mergeVersionArrays(a,b){ const byId=new Map(); [...(a||[]), ...(b||[])].forEach(n=>{ if(!n) return; const id=n.id || ('legacy_'+(n.version||0)+'_'+vaultTimeValue(n)); const cur={...n,id}; const prev=byId.get(id); if(!prev || vaultTimeValue(cur)>=vaultTimeValue(prev)) byId.set(id, cur); }); return [...byId.values()].sort((x,y)=>(Number(x.version||0)-Number(y.version||0)) || (vaultTimeValue(x)-vaultTimeValue(y))); }
+function mergeNoteVault(remoteVault){ const local=loadRawNoteVault(); const out={...local}; Object.keys(remoteVault||{}).forEach(k=>{ const lv=out[k]||{}; const rv=remoteVault[k]||{}; out[k]={...lv,...rv}; out[k].noteVersions=mergeVersionArrays(lv.noteVersions, rv.noteVersions); out[k].noteVersion=Math.max(Number(lv.noteVersion||0), Number(rv.noteVersion||0), out[k].noteVersions.length?Math.max(...out[k].noteVersions.map(n=>Number(n.version||0))):0); out[k].updatedAt=[lv.updatedAt,rv.updatedAt].filter(Boolean).sort().pop() || ''; }); noteVault=out; saveRawNoteVault(); return out; }
+function persistNoteToVault(v, round, r){ if(!v || !r) return; migrateNoteVersions(r); const key=noteVaultKey(v, round); const prev=noteVault[key]||{}; noteVault[key]={...prev, year:activeYear, villageId:v.id, eup:v.eup, village:v.village, round, noteVersion:Number(r.noteVersion||0), noteVersions:mergeVersionArrays(prev.noteVersions, r.noteVersions), updatedAt:new Date().toISOString()}; saveRawNoteVault(); }
+function restoreNoteFromVault(v, round, r){ if(!v || !r) return; const key=noteVaultKey(v, round); const saved=noteVault[key]; if(!saved || !Array.isArray(saved.noteVersions) || !saved.noteVersions.length) return; migrateNoteVersions(r); const merged=mergeVersionArrays(r.noteVersions, saved.noteVersions); if(merged.length !== (r.noteVersions||[]).length || Number(saved.noteVersion||0)>Number(r.noteVersion||0)){ r.noteVersions=merged; r.noteVersion=Math.max(Number(r.noteVersion||0), Number(saved.noteVersion||0), merged.length?Math.max(...merged.map(n=>Number(n.version||0))):0); migrateNoteVersions(r); } }
+function remoteSnapshot(){ syncYearContext(); villages.forEach(v=>roundOrder.forEach(r=>{ const rr=rec(v,r); migrateNoteVersions(rr); persistNoteToVault(v,r,rr); })); return {users, villages, noteVault, years, activeYear, roundOrderByYear, visibleRoundsByYear, visibleRounds, uploadHistory, briefings, beeFarmers, beeMappings, beeUploadHistory, appVersion:APP_VERSION, updatedAt: new Date().toISOString()}; }
+function cloneObj(x){ try{return JSON.parse(JSON.stringify(x));}catch(e){return x;} }
+function noteTimeValue(n){ return Date.parse(n.updatedAt||n.deletedAt||n.createdAt||n.editedAt||'') || Number(String(n.id||'').replace(/[^0-9]/g,'')) || 0; }
+function mergeNoteVersions(localR, remoteR){
+  migrateNoteVersions(localR); migrateNoteVersions(remoteR);
+  const byId=new Map();
+  [...(remoteR.noteVersions||[]), ...(localR.noteVersions||[])].forEach(n=>{
+    if(!n) return;
+    const id=n.id || ('legacy_'+(n.version||0)+'_'+noteTimeValue(n));
+    const prev=byId.get(id);
+    if(!prev || noteTimeValue(n)>=noteTimeValue(prev)) byId.set(id, cloneObj({...n,id}));
+  });
+  remoteR.noteVersions=[...byId.values()].sort((a,b)=>(Number(a.version||0)-Number(b.version||0)) || (noteTimeValue(a)-noteTimeValue(b)));
+  remoteR.noteVersion=Math.max(Number(localR.noteVersion||0), Number(remoteR.noteVersion||0), remoteR.noteVersions.length ? Math.max(...remoteR.noteVersions.map(n=>Number(n.version||0))) : 0);
+  migrateNoteVersions(remoteR);
+  if((localR.noteVersions||[]).length > (remoteR.noteVersions||[]).length){ remoteR.history=Array.isArray(remoteR.history)?remoteR.history:[]; remoteR.history.push({type:'특이사항 병합 보호', user:'시스템', at:now(), text:'서버 동기화 중 로컬 특이사항 이력을 보존했습니다.'}); }
+}
+function mergeRemoteVillages(remoteVillages, localVillages){
+  const localMap=new Map((localVillages||[]).map(v=>[v.id,v]));
+  const merged=(remoteVillages||[]).map(rv=>{
+    const out=migrateVillage(cloneObj(rv));
+    const lv=localMap.get(out.id);
+    if(lv && lv.roundsByYear && out.roundsByYear){
+      Object.keys(lv.roundsByYear).forEach(year=>{
+        out.roundsByYear[year]=out.roundsByYear[year]||{};
+        Object.keys(lv.roundsByYear[year]||{}).forEach(round=>{
+          out.roundsByYear[year][round]=out.roundsByYear[year][round]||blank();
+          mergeNoteVersions(lv.roundsByYear[year][round], out.roundsByYear[year][round]);
+        });
+      });
+    }
+    return out;
+  });
+  (localVillages||[]).forEach(lv=>{ if(!merged.some(v=>v.id===lv.id)) merged.push(migrateVillage(cloneObj(lv))); });
+  return merged;
+}
+function applyRemoteSnapshot(data){ if(!data || typeof data !== 'object') return; const localVillagesBefore=cloneObj(villages); if(Array.isArray(data.users)) users = data.users; if(Array.isArray(data.years)) years = data.years.map(String); if(data.activeYear) activeYear = String(data.activeYear); if(data.roundOrderByYear && typeof data.roundOrderByYear==='object') roundOrderByYear = data.roundOrderByYear; if(data.visibleRoundsByYear && typeof data.visibleRoundsByYear==='object') visibleRoundsByYear = data.visibleRoundsByYear; if(Array.isArray(data.visibleRounds) && !visibleRoundsByYear[activeYear]) visibleRoundsByYear[activeYear] = data.visibleRounds; syncYearContext(); if(data.noteVault && typeof data.noteVault==='object') mergeNoteVault(data.noteVault); if(Array.isArray(data.villages)) villages = mergeRemoteVillages(data.villages, localVillagesBefore); if(Array.isArray(data.uploadHistory)) uploadHistory = data.uploadHistory; if(data.briefings && typeof data.briefings==='object') briefings = data.briefings; if(Array.isArray(data.beeFarmers)) beeFarmers = data.beeFarmers; if(data.beeMappings && typeof data.beeMappings==='object') beeMappings = data.beeMappings; if(Array.isArray(data.beeUploadHistory)) beeUploadHistory = data.beeUploadHistory; localStorage.setItem(LS+'users', JSON.stringify(users)); localStorage.setItem(LS+'villages', JSON.stringify(villages)); localStorage.setItem(LS+'years', JSON.stringify(years)); localStorage.setItem(LS+'activeYear', JSON.stringify(activeYear)); localStorage.setItem(LS+'roundOrderByYear', JSON.stringify(roundOrderByYear)); localStorage.setItem(LS+'visibleRoundsByYear', JSON.stringify(visibleRoundsByYear)); localStorage.setItem(LS+'visibleRounds', JSON.stringify(visibleRounds)); localStorage.setItem(LS+'uploadHistory', JSON.stringify(uploadHistory)); localStorage.setItem(LS+'briefings', JSON.stringify(briefings)); localStorage.setItem(LS+'beeFarmers', JSON.stringify(beeFarmers)); localStorage.setItem(LS+'beeMappings', JSON.stringify(beeMappings)); localStorage.setItem(LS+'beeUploadHistory', JSON.stringify(beeUploadHistory)); saveRawNoteVault(); }
+function scheduleRemoteSave(){ if(!supabaseClient || !remoteReady || remoteLoading) return; remoteSavePending = true; clearTimeout(remoteSaveTimer); remoteSaveTimer = setTimeout(()=>saveRemoteNow(false), 350); }
+async function saveRemoteNow(force=false){ if(!supabaseClient || !remoteReady || remoteLoading) return false; if(!force && !remoteSavePending) return true; remoteSavePending = false; const payload = remoteSnapshot(); const { data:serverRow } = await supabaseClient.from(REMOTE_TABLE).select('data').eq('id', REMOTE_ID).maybeSingle(); if(serverRow && serverRow.data){ applyRemoteSnapshot(serverRow.data); payload.villages=villages; } const { error } = await supabaseClient.from(REMOTE_TABLE).upsert({ id: REMOTE_ID, data: remoteSnapshot(), updated_at: new Date().toISOString() }); if(error){ showError('실시간 저장 오류: '+error.message); return false; } return true; }
 async function loadRemoteState(){ if(!supabaseClient) return; remoteLoading = true; const { data, error } = await supabaseClient.from(REMOTE_TABLE).select('data').eq('id', REMOTE_ID).maybeSingle(); if(error){ remoteLoading = false; showError('Supabase 연결 오류: '+error.message); return; } if(data && data.data){ applyRemoteSnapshot(data.data); } else { await supabaseClient.from(REMOTE_TABLE).upsert({ id: REMOTE_ID, data: remoteSnapshot(), updated_at: new Date().toISOString() }); } remoteReady = true; remoteLoading = false; }
-function subscribeRemote(){ if(!supabaseClient || remoteChannel) return; remoteChannel = supabaseClient.channel('samjin-app-state').on('postgres_changes', {event:'*', schema:'public', table:REMOTE_TABLE, filter:'id=eq.'+REMOTE_ID}, payload=>{ if(payload && payload.new && payload.new.data){ remoteLoading = true; applyRemoteSnapshot(payload.new.data); remoteLoading = false; render(); } }).subscribe(); }
+function subscribeRemote(){ if(!supabaseClient || remoteChannel) return; remoteChannel = supabaseClient.channel('samjin-app-state').on('postgres_changes', {event:'*', schema:'public', table:REMOTE_TABLE, filter:'id=eq.'+REMOTE_ID}, payload=>{ if(payload && payload.new && payload.new.data){ remoteLoading = true; applyRemoteSnapshot(payload.new.data); remoteLoading = false; localStorage.setItem(LS+'lastSyncAt', JSON.stringify(now())); render(); } }).subscribe(); }
 function showError(msg){ const el=$('errorBox'); if(!el) return; el.classList.remove('hidden'); el.textContent=msg; }
 function importOldUsers(){ try{ const x = JSON.parse(localStorage.getItem('users') || 'null'); return Array.isArray(x) ? x : null; }catch(e){ return null; } }
 function importOldVillages(){ try{ const x = JSON.parse(localStorage.getItem('villages') || 'null'); return Array.isArray(x) ? x : null; }catch(e){ return null; } }
-function blank(){ return {status:'pending', completedBy:'', completedAt:'', completedList:[], note:'', noteBy:'', noteAt:'', noteImportant:false, history:[]}; }
+function blank(){ return {status:'pending', completedBy:'', completedAt:'', completedList:[], note:'', noteBy:'', noteAt:'', noteImportant:false, noteVersion:0, noteVersions:[], history:[]}; }
 function migrateVillage(v){
   const base = {id:v.id || uid(), eup:v.eup || '진전면', village:v.village || '', chief:v.chief || '', phone:v.phone || '', chiefHistory:Array.isArray(v.chiefHistory)?v.chiefHistory:[]};
   base.roundsByYear = v.roundsByYear && typeof v.roundsByYear === 'object' ? v.roundsByYear : {};
@@ -74,8 +120,8 @@ function migrateVillage(v){
     base.roundsByYear[activeYear] = v.rounds && typeof v.rounds === 'object' ? v.rounds : {};
   }
   base.rounds = base.roundsByYear[activeYear];
-  roundOrder.forEach(r=>{ if(!base.rounds[r]) base.rounds[r] = blank(); if(!Array.isArray(base.rounds[r].history)) base.rounds[r].history = []; if(!Array.isArray(base.rounds[r].completedList)) base.rounds[r].completedList = base.rounds[r].completedBy ? [{user:base.rounds[r].completedBy, at:base.rounds[r].completedAt || '', canceled:false}] : []; if(base.rounds[r].noteImportant===undefined) base.rounds[r].noteImportant=false; syncContactSummary(base.rounds[r]); });
-  if(v.status || v.completedBy || v.note){ Object.assign(base.rounds[roundOrder[0] || '1차 방제'], {status:v.status||'pending', completedBy:v.completedBy||'', completedAt:v.completedAt||'', completedList:v.completedBy?[{user:v.completedBy, at:v.completedAt||''}]:[], note:v.note||'', noteBy:v.noteBy||'', noteAt:v.noteAt||'', history:Array.isArray(v.history)?v.history:[]}); }
+  roundOrder.forEach(r=>{ if(!base.rounds[r]) base.rounds[r] = blank(); if(!Array.isArray(base.rounds[r].history)) base.rounds[r].history = []; if(!Array.isArray(base.rounds[r].completedList)) base.rounds[r].completedList = base.rounds[r].completedBy ? [{user:base.rounds[r].completedBy, at:base.rounds[r].completedAt || '', canceled:false}] : []; if(base.rounds[r].noteImportant===undefined) base.rounds[r].noteImportant=false; migrateNoteVersions(base.rounds[r]); restoreNoteFromVault(base, r, base.rounds[r]); syncContactSummary(base.rounds[r]); });
+  if(v.status || v.completedBy || v.note){ Object.assign(base.rounds[roundOrder[0] || '1차 방제'], {status:v.status||'pending', completedBy:v.completedBy||'', completedAt:v.completedAt||'', completedList:v.completedBy?[{user:v.completedBy, at:v.completedAt||''}]:[], note:v.note||'', noteBy:v.noteBy||'', noteAt:v.noteAt||'', noteImportant:!!v.noteImportant, history:Array.isArray(v.history)?v.history:[]}); migrateNoteVersions(base.rounds[roundOrder[0] || '1차 방제']); }
   return base;
 }
 function persistAll(){ syncYearContext(); save('users', users); save('villages', villages); save('years', years); save('activeYear', activeYear); save('roundOrderByYear', roundOrderByYear); save('visibleRoundsByYear', visibleRoundsByYear); save('visibleRounds', visibleRounds); save('uploadHistory', uploadHistory); save('briefings', briefings); save('beeFarmers', beeFarmers); save('beeMappings', beeMappings); save('beeUploadHistory', beeUploadHistory); if(currentUser) save('currentUser', currentUser); }
@@ -84,7 +130,7 @@ function safe(s){ return String(s ?? '').replace(/[&<>"']/g, c=>({'&':'&amp;','<
 function norm(s){ return String(s||'').trim().toLowerCase().replace(/\s+/g,''); }
 function now(){ return new Date().toLocaleString('ko-KR', {hour12:false}); }
 function activeRound(){ return selectedRound || visibleRounds[0] || roundOrder[0]; }
-function rec(v, round=activeRound()){ if(!v.roundsByYear) v.roundsByYear={}; if(!v.roundsByYear[activeYear]) v.roundsByYear[activeYear]={}; v.rounds = v.roundsByYear[activeYear]; if(!v.rounds[round]) v.rounds[round]=blank(); return v.rounds[round]; }
+function rec(v, round=activeRound()){ if(!v.roundsByYear) v.roundsByYear={}; if(!v.roundsByYear[activeYear]) v.roundsByYear[activeYear]={}; v.rounds = v.roundsByYear[activeYear]; if(!v.rounds[round]) v.rounds[round]=blank(); migrateNoteVersions(v.rounds[round]); restoreNoteFromVault(v, round, v.rounds[round]); return v.rounds[round]; }
 
 function allContactEntries(r){ if(!Array.isArray(r.completedList)) r.completedList = r.completedBy ? [{user:r.completedBy, at:r.completedAt || '', canceled:false}] : []; return r.completedList; }
 function activeContactEntries(r){ return allContactEntries(r).filter(x=>!x.canceled); }
@@ -92,8 +138,59 @@ function contactEntries(r){ return activeContactEntries(r); }
 function contactNames(r){ const names=[...new Set(activeContactEntries(r).map(x=>x.user).filter(Boolean))]; return names.join(', '); }
 function lastContactAt(r){ const list=activeContactEntries(r); return list.length ? (list[list.length-1].at || '') : ''; }
 function syncContactSummary(r){ const names=contactNames(r); r.completedBy=names; r.completedAt=lastContactAt(r); r.status=names ? 'done' : 'pending'; }
+function migrateNoteVersions(r){
+  if(!Array.isArray(r.noteVersions)) r.noteVersions=[];
+  r.noteVersion = Number(r.noteVersion || r.noteVersions.length || 0);
+  if((r.note || r.noteBy || r.noteAt) && !r.noteVersions.length){
+    r.noteVersion = 1;
+    r.noteVersions.push({id:'note_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), version:1, text:r.note||'', important:!!r.noteImportant, createdBy:r.noteBy||'이전 기록', createdAt:r.noteAt||'', action:'이전 특이사항 가져오기', deleted:false});
+  }
+  const active=[...r.noteVersions].reverse().find(n=>!n.deleted);
+  r.note = active ? (active.text || '') : '';
+  r.noteImportant = active ? !!active.important : false;
+  r.noteBy = active ? (active.createdBy || active.editedBy || '') : '';
+  r.noteAt = active ? (active.createdAt || active.editedAt || '') : '';
+}
+function currentNoteRecord(r){ migrateNoteVersions(r); return [...r.noteVersions].reverse().find(n=>!n.deleted) || null; }
+function noteStamp(){ return String(Date.now()) + '_' + Math.random().toString(36).slice(2,8); }
+function noteVersionText(r){ migrateNoteVersions(r); return String(r.noteVersion || 0); }
+function renderNoteHistory(r){
+  const box=$('noteHistoryList');
+  if(!box) return;
+  migrateNoteVersions(r);
+  if(!r.noteVersions.length){ box.innerHTML='<p class="muted">아직 특이사항 이력이 없습니다.</p>'; return; }
+  const list=[...r.noteVersions].reverse();
+  box.innerHTML=list.map(n=>`<div class="history-item ${n.deleted?'canceled':''}"><strong>Version ${safe(n.version)} · ${safe(n.action||'저장')}</strong> - ${safe(n.createdBy||n.editedBy||'-')}<time>${safe(n.createdAt||n.editedAt||'-')}</time><div>${safe(n.text||'내용 없음')}</div><div class="meta">${n.important?'중요 특이사항 · ':''}${n.deleted?`삭제: ${safe(n.deletedBy||'-')} · ${safe(n.deletedAt||'-')} · ${safe(n.deleteReason||'사유 없음')}`:'보관 중'}</div>${currentUser && currentUser.role==='admin' ? `<div class="note-history-actions"><button class="mini secondary" data-restore-note="${safe(n.id)}">복원</button>${!n.deleted?`<button class="mini danger" data-delete-note="${safe(n.id)}">삭제 이력 처리</button>`:''}</div>`:''}</div>`).join('');
+}
+function handleNoteHistoryClick(e){
+  const restore=e.target.closest('[data-restore-note]');
+  const del=e.target.closest('[data-delete-note]');
+  if(restore) restoreNoteVersion(restore.dataset.restoreNote);
+  if(del) deleteNoteVersion(del.dataset.deleteNote);
+}
+function restoreNoteVersion(id){
+  if(!currentUser || currentUser.role!=='admin') return alert('관리자만 복원할 수 있습니다.');
+  const v=villages.find(x=>x.id===selectedVillageId); if(!v) return alert('마을을 다시 선택하세요.');
+  const r=rec(v); const n=r.noteVersions.find(x=>x.id===id); if(!n) return alert('복원할 이력을 찾지 못했습니다.');
+  const at=now(); const version=Number(r.noteVersion||0)+1;
+  r.noteVersion=version;
+  r.noteVersions.push({id:'note_'+noteStamp(), version, text:n.text||'', important:!!n.important, createdBy:currentUser.name, createdAt:at, action:'관리자 복원', restoredFrom:n.version, deleted:false});
+  r.history.push({type:'특이사항 복원', user:currentUser.name, at, text:`Version ${n.version} 내용을 Version ${version}으로 복원`});
+  migrateNoteVersions(r); persistNoteToVault(v, selectedRound, r); save('villages',villages); $('noteInput').value=r.note||''; $('noteImportantCheck').checked=!!r.noteImportant; $('noteInput').dataset.version=noteVersionText(r); drawDialog(v); renderContact(); alert('특이사항이 복원되었습니다.');
+}
+function deleteNoteVersion(id){
+  if(!currentUser || currentUser.role!=='admin') return alert('관리자만 삭제 처리할 수 있습니다.');
+  const v=villages.find(x=>x.id===selectedVillageId); if(!v) return alert('마을을 다시 선택하세요.');
+  const r=rec(v); const n=r.noteVersions.find(x=>x.id===id); if(!n || n.deleted) return alert('삭제 처리할 이력을 찾지 못했습니다.');
+  const reason=prompt('삭제 사유를 입력하세요.', '잘못 입력') || '사유 미입력';
+  const at=now(); n.deleted=true; n.deletedBy=currentUser.name; n.deletedAt=at; n.deleteReason=reason; n.action=n.action || '저장';
+  r.noteVersion=Number(r.noteVersion||0)+1;
+  r.history.push({type:'특이사항 삭제 이력', user:currentUser.name, at, text:`Version ${n.version} 삭제 처리 / ${reason}`});
+  migrateNoteVersions(r); persistNoteToVault(v, selectedRound, r); save('villages',villages); $('noteInput').value=r.note||''; $('noteImportantCheck').checked=!!r.noteImportant; $('noteInput').dataset.version=noteVersionText(r); drawDialog(v); renderContact(); alert('삭제 이력으로 기록되었습니다. 실제 기록은 보관됩니다.');
+}
+
 function changeChief(v, newChief, newPhone, source){ const oldChief=v.chief||'', oldPhone=v.phone||''; const chiefChanged=oldChief!==newChief, phoneChanged=oldPhone!==newPhone; if((chiefChanged||phoneChanged) && (oldChief||oldPhone)){ if(!Array.isArray(v.chiefHistory)) v.chiefHistory=[]; v.chiefHistory.unshift({at:now(), user:currentUser?currentUser.name:'-', source:source||'수정', oldChief, newChief, oldPhone, newPhone, text:`${source||'수정'}: ${oldChief||'-'} → ${newChief||'-'} / ${oldPhone||'-'} → ${newPhone||'-'}`}); } v.chief=newChief; v.phone=newPhone; }
-function isImportantNote(r){ return !!r.noteImportant; }
+function isImportantNote(r){ migrateNoteVersions(r); return !!r.noteImportant; }
 
 function visible(){ return roundOrder.filter(r=>visibleRounds.includes(r)); }
 function towns(){ const set = new Set(villages.map(v=>v.eup)); return [...townOrder.filter(t=>set.has(t)), ...[...set].filter(t=>!townOrder.includes(t)).sort((a,b)=>a.localeCompare(b,'ko'))]; }
@@ -113,7 +210,7 @@ function bind(){
   $('roundList').onclick=e=>{ const card=e.target.closest('[data-round]'); if(card) {selectedRound=card.dataset.round; selectedTown=''; save('selectedRound',selectedRound); save('selectedTown',''); renderContact();} };
   $('townList').onclick=e=>{ const card=e.target.closest('[data-town]'); if(card) {selectedTown=card.dataset.town; save('selectedTown',selectedTown); renderContact();} };
   $('villageList').onclick=e=>{ const card=e.target.closest('[data-village]'); if(card) openVillage(card.dataset.village); };
-  $('closeDialogBtn').onclick=()=>{$('villageDialog').close();}; $('completeBtn').onclick=completeContact; const saveChiefBtn=$('saveChiefContactBtn'); if(saveChiefBtn) saveChiefBtn.onclick=saveChiefContact; $('saveNoteBtn').onclick=saveNote; $('contactHistoryList').onclick=e=>{ const btn=e.target.closest('[data-cancel-contact]'); if(btn) cancelContact(btn.dataset.cancelContact); }; const quickBox=$('quickMessageBox'); if(quickBox) quickBox.onclick=e=>{ const btn=e.target.closest('[data-quick-message]'); if(btn) sendQuickMessage(btn.dataset.quickMessage); };
+  $('closeDialogBtn').onclick=()=>{$('villageDialog').close();}; $('completeBtn').onclick=completeContact; const saveChiefBtn=$('saveChiefContactBtn'); if(saveChiefBtn) saveChiefBtn.onclick=saveChiefContact; $('saveNoteBtn').onclick=saveNote; if($('noteHistoryList')) $('noteHistoryList').onclick=handleNoteHistoryClick; $('contactHistoryList').onclick=e=>{ const btn=e.target.closest('[data-cancel-contact]'); if(btn) cancelContact(btn.dataset.cancelContact); }; const quickBox=$('quickMessageBox'); if(quickBox) quickBox.onclick=e=>{ const btn=e.target.closest('[data-quick-message]'); if(btn) sendQuickMessage(btn.dataset.quickMessage); };
   $('saveRoundVisibilityBtn').onclick=saveRoundVisibility; $('saveVillageBtn').onclick=saveVillage; $('clearVillageFormBtn').onclick=clearVillageForm; $('saveUserBtn').onclick=saveUser; $('clearUserFormBtn').onclick=clearUserForm; $('importVillageBtn').onclick=importVillageFile; $('downloadTemplateBtn').onclick=downloadVillageTemplate; $('exportVillageBtn').onclick=exportVillages;
   if($('importBeeBtn')) $('importBeeBtn').onclick=importBeeFile; if($('downloadBeeTemplateBtn')) $('downloadBeeTemplateBtn').onclick=downloadBeeTemplate; if($('exportBeeBtn')) $('exportBeeBtn').onclick=exportBeeFarmers; if($('beeMatchTable')) $('beeMatchTable').onclick=handleBeeMatchClick; if($('beeTable')) $('beeTable').onclick=handleBeeTableClick; if($('beeSearchInput')) $('beeSearchInput').oninput=renderBeeTable; if($('beeSelectAllCheck')) $('beeSelectAllCheck').onchange=toggleBeeSelectAll; if($('deleteSelectedBeeBtn')) $('deleteSelectedBeeBtn').onclick=deleteSelectedBeeFarmers; const dbl=$('dialogBeeList'); if(dbl) dbl.onclick=handleDialogBeeClick; $('villageTable').onclick=e=>{ const edit=e.target.closest('[data-edit-village]'); const del=e.target.closest('[data-delete-village]'); if(edit) editVillage(edit.dataset.editVillage); if(del) deleteVillage(del.dataset.deleteVillage); };
   $('userTable').onclick=e=>{ const edit=e.target.closest('[data-edit-user]'); const del=e.target.closest('[data-delete-user]'); if(edit) editUser(edit.dataset.editUser); if(del) deleteUser(del.dataset.deleteUser); };
@@ -136,7 +233,7 @@ function renderRoundView(){ $('roundView').classList.remove('hidden'); $('townVi
 function notePreviewForTown(t){ const notes=villages.filter(v=>v.eup===t).map(v=>({v,r:rec(v)})).filter(x=>x.r.note).slice(0,3); if(!notes.length) return ''; return `<div class="note-preview-list">${notes.map(x=>`<div class="note-preview-row ${isImportantNote(x.r)?'important':''}"><strong>${safe(x.v.village)}</strong> ${safe(x.r.note)}</div>`).join('')}${stats(villages.filter(v=>v.eup===t)).note>3?'<div class="meta">외 특이사항 더 있음</div>':''}</div>`; }
 function renderTownView(){ $('roundView').classList.add('hidden'); $('townView').classList.remove('hidden'); $('villageView').classList.add('hidden'); $('breadcrumb').classList.remove('hidden'); $('breadcrumb').textContent=activeYear + '년 · ' + selectedRound; const fv=filteredVillages(); const wf=$('workerFilter') ? $('workerFilter').value : 'all'; const townItems=towns().filter(t=>wf==='all'||fv.some(v=>v.eup===t)); $('townList').innerHTML=townItems.map(t=>{ const list=villages.filter(v=>v.eup===t), shown=fv.filter(v=>v.eup===t), s=stats(fv.filter(v=>v.eup===t).length?fv.filter(v=>v.eup===t):list); return `<article class="card town-card" data-town="${safe(t)}"><div class="town-name">${safe(t)}</div><div class="town-stats"><span class="badge done">완료 ${s.done}</span><span class="badge pending">미연락 ${s.pending}</span>${s.note?`<span class="badge note">특이사항 ${s.note}</span>`:''}</div><div class="progress"><span style="width:${s.rate}%"></span></div><div class="meta">전체 ${s.total}개 마을 · 완료율 ${s.rate}%${shown.length!==list.length?` · 검색결과 ${shown.length}개`:''}</div>${notePreviewForTown(t)}</article>`; }).join('') || '<div class="card">등록된 마을이 없습니다.</div>'; }
 function renderVillageView(){ $('roundView').classList.add('hidden'); $('townView').classList.add('hidden'); $('villageView').classList.remove('hidden'); $('breadcrumb').classList.remove('hidden'); $('breadcrumb').textContent=`${activeYear}년 · ${selectedRound} > ${selectedTown}`; const all=villages.filter(v=>v.eup===selectedTown), s=stats(all); $('selectedTownTitle').textContent=selectedTown; $('selectedTownDesc').textContent=`전체 ${s.total}개 · 완료 ${s.done} · 미연락 ${s.pending} · 특이사항 ${s.note} · 완료율 ${s.rate}%`; const list=filteredVillages().filter(v=>v.eup===selectedTown); $('villageList').innerHTML=list.length?list.map(v=>{ const r=rec(v); return `<article class="card village-card" data-village="${safe(v.id)}"><div class="village-title"><strong>${safe(v.village)}</strong><span class="badge ${r.status==='done'?'done':'pending'}">${r.status==='done'?'완료':'미연락'}</span></div><div class="chief">이장님: ${safe(v.chief)}</div><div class="meta">연락처: ${safe(v.phone)}</div>${beeCountForVillage(v.id)?`<div class="meta bee-meta">🐝 양봉농가 ${beeCountForVillage(v.id)}곳</div>`:''}<div class="meta">담당 방제사: ${safe(contactNames(r)||'연락 전')}</div>${lastContactAt(r)?`<div class="meta">최근 연락 완료: ${safe(lastContactAt(r))}</div>`:''}${r.note?`<div class="note-card ${isImportantNote(r)?'important':''}"><div class="note-card-title">${isImportantNote(r)?'중요 특이사항':'특이사항'}</div><div>${safe(r.note)}</div><div class="meta">작성: ${safe(r.noteBy||'-')} · ${safe(r.noteAt||'-')}</div></div>`:''}</article>`; }).join(''):'<div class="card">조건에 맞는 마을이 없습니다.</div>'; }
-function openVillage(id){ const v=villages.find(x=>x.id===id); if(!v) return; selectedVillageId=id; const r=rec(v); $('dialogTitle').textContent=`${activeYear}년 · ${selectedRound} · ${v.eup} ${v.village}`; $('dialogSub').textContent=`담당 방제사: ${contactNames(r)||'연락 전'}`; $('chiefName').textContent=v.chief; $('chiefPhone').textContent=v.phone; $('assignedDisplay').textContent=contactNames(r)||'연락 전'; $('callBtn').href='tel:'+v.phone.replace(/[^0-9]/g,''); $('noteInput').value=r.note||''; $('noteImportantCheck').checked=!!r.noteImportant; drawDialog(v); $('villageDialog').showModal(); }
+function openVillage(id){ const v=villages.find(x=>x.id===id); if(!v) return; selectedVillageId=id; const r=rec(v); $('dialogTitle').textContent=`${activeYear}년 · ${selectedRound} · ${v.eup} ${v.village}`; $('dialogSub').textContent=`담당 방제사: ${contactNames(r)||'연락 전'}`; $('chiefName').textContent=v.chief; $('chiefPhone').textContent=v.phone; $('assignedDisplay').textContent=contactNames(r)||'연락 전'; $('callBtn').href='tel:'+v.phone.replace(/[^0-9]/g,''); migrateNoteVersions(r); $('noteInput').value=r.note||''; $('noteInput').dataset.version=noteVersionText(r); $('noteImportantCheck').checked=!!r.noteImportant; const nb=$('noteConflictBox'); if(nb) nb.classList.add('hidden'); drawDialog(v); $('villageDialog').showModal(); }
 function drawDialog(v){
   const r=rec(v);
   syncContactSummary(r);
@@ -145,6 +242,7 @@ function drawDialog(v){
   $('assignedDisplay').textContent=contactNames(r)||'연락 전';
   renderDialogBriefing(v);
   renderDialogBees(v);
+  renderNoteHistory(r);
   const contacts=[];
   roundOrder.forEach(round=>{
     const rr=rec(v,round);
@@ -216,7 +314,47 @@ async function saveChiefContact(){
   openVcfFile(filename, '\ufeff'+vcf);
   alert('연락처 파일을 열었습니다. 휴대폰에서 연락처 저장 또는 가져오기를 선택해 주세요.');
 }
-function saveNote(){ const v=villages.find(x=>x.id===selectedVillageId); if(!v) return alert('마을을 다시 선택하세요.'); const r=rec(v), text=$('noteInput').value.trim(), important=$('noteImportantCheck').checked; if(r.note && currentUser.role!=='admin' && r.noteBy!==currentUser.name) return alert('특이사항은 작성자 또는 관리자만 수정할 수 있습니다.'); if(r.note!==text || !!r.noteImportant!==!!important){ r.note=text; r.noteImportant=!!important; r.noteBy=text?currentUser.name:''; r.noteAt=text?now():''; r.history.push({type:important?'중요 특이사항 저장':'특이사항 저장',user:currentUser.name,at:now(),text:text||'내용 삭제'}); save('villages',villages); } drawDialog(v); renderContact(); alert('저장되었습니다.'); }
+async function saveNote(){
+  const v=villages.find(x=>x.id===selectedVillageId);
+  if(!v) return alert('마을을 다시 선택하세요.');
+  const r=rec(v), text=$('noteInput').value.trim(), important=$('noteImportantCheck').checked;
+  migrateNoteVersions(r);
+  const openedVersion=String($('noteInput').dataset.version || '0');
+  const latestVersion=noteVersionText(r);
+  const conflictBox=$('noteConflictBox');
+  if(openedVersion!==latestVersion){
+    if(conflictBox){ conflictBox.classList.remove('hidden'); conflictBox.textContent=`다른 사용자가 먼저 특이사항을 수정했습니다. 현재 화면을 최신 내용으로 다시 불러온 뒤 저장해 주세요. 최신 Version: ${latestVersion}`; }
+    $('noteInput').value=r.note||'';
+    $('noteImportantCheck').checked=!!r.noteImportant;
+    $('noteInput').dataset.version=latestVersion;
+    renderNoteHistory(r);
+    return alert('저장 충돌이 감지되었습니다. 최신 내용을 확인한 뒤 다시 저장해 주세요.');
+  }
+  if(r.note && currentUser.role!=='admin' && r.noteBy!==currentUser.name) return alert('특이사항은 작성자 또는 관리자만 수정할 수 있습니다.');
+  if(!text && r.note && currentUser.role!=='admin') return alert('특이사항 삭제는 관리자만 할 수 있습니다. 내용을 수정해서 저장해 주세요.');
+  if(r.note!==text || !!r.noteImportant!==!!important){
+    const at=now();
+    const version=Number(r.noteVersion||0)+1;
+    r.noteVersion=version;
+    if(!text){
+      const active=currentNoteRecord(r);
+      if(active){ active.deleted=true; active.deletedBy=currentUser.name; active.deletedAt=at; active.deleteReason='관리자 빈 내용 저장'; }
+      r.history.push({type:'특이사항 삭제 이력',user:currentUser.name,at,text:'특이사항을 삭제 처리했습니다. 기존 기록은 이력에 보관됩니다.'});
+    } else {
+      const action=r.note ? '특이사항 수정' : '특이사항 작성';
+      r.noteVersions.push({id:'note_'+noteStamp(), version, text, important:!!important, createdBy:currentUser.name, createdAt:at, action, deleted:false, baseVersion:Number(openedVersion||0)});
+      r.history.push({type:important?'중요 특이사항 저장':action,user:currentUser.name,at,text});
+    }
+    migrateNoteVersions(r);
+    persistNoteToVault(v, selectedRound, r);
+    save('villages',villages);
+    const ok = await saveRemoteNow(true);
+    if(supabaseClient && !ok) return alert('서버 저장에 실패했습니다. 인터넷 연결을 확인한 뒤 다시 저장해 주세요.');
+  }
+  $('noteInput').dataset.version=noteVersionText(r);
+  const nb=$('noteConflictBox'); if(nb) nb.classList.add('hidden');
+  drawDialog(v); renderContact(); alert('저장되었습니다.');
+}
 
 function setQuickMessageStatus(text){ const el=$('quickMessageStatus'); if(el) el.textContent=text||''; }
 function cleanPhone(phone){ return String(phone||'').replace(/[^0-9]/g,''); }
@@ -235,13 +373,32 @@ function beeMapQuery(b){
   return parts.join(' ').trim() || b.location || '';
 }
 
-function getCurrentLocationLink(){
+async function getCurrentLocationLink(){
+  const makeLink = pos => {
+    const lat = pos.coords.latitude.toFixed(6);
+    const lng = pos.coords.longitude.toFixed(6);
+    return `https://maps.google.com/?q=${lat},${lng}`;
+  };
+
+  if(window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Geolocation){
+    const Geo = window.Capacitor.Plugins.Geolocation;
+    try{
+      const perm = await Geo.requestPermissions();
+      const loc = perm && (perm.location || perm.coarseLocation);
+      if(loc && loc !== 'granted' && loc !== 'prompt' && loc !== 'prompt-with-rationale'){
+        throw new Error('위치 권한이 거부되었습니다. 휴대폰 설정에서 앱 위치 권한을 허용해 주세요.');
+      }
+    }catch(e){
+      if(String(e && e.message || '').includes('거부')) throw e;
+    }
+    const pos = await Geo.getCurrentPosition({enableHighAccuracy:true, timeout:12000, maximumAge:30000});
+    return makeLink(pos);
+  }
+
   return new Promise((resolve,reject)=>{
     if(!navigator.geolocation) return reject(new Error('이 기기에서는 위치 기능을 사용할 수 없습니다.'));
     navigator.geolocation.getCurrentPosition(pos=>{
-      const lat=pos.coords.latitude.toFixed(6);
-      const lng=pos.coords.longitude.toFixed(6);
-      resolve(`https://maps.google.com/?q=${lat},${lng}`);
+      resolve(makeLink(pos));
     }, err=>{
       reject(new Error(err && err.message ? err.message : '현재 위치를 가져오지 못했습니다.'));
     }, {enableHighAccuracy:true, timeout:12000, maximumAge:30000});
