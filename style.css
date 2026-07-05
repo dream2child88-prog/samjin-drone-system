@@ -44,3 +44,21 @@ button:disabled{opacity:.55;cursor:not-allowed;background:#94a3b8!important}
 .bee-move-box{margin:10px 0;padding:10px;border:1px solid #dbeafe;border-radius:12px;background:#eff6ff;display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end}.bee-move-box label{grid-column:1/-1;margin:0;font-size:13px;color:#123c69}.bee-move-box select{min-width:180px}@media(max-width:760px){.bee-move-box{grid-template-columns:1fr}.bee-move-box select{min-width:0}}
 .note-history-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
 #noteConflictBox{margin-top:10px}
+
+.daily-report-controls{display:grid;grid-template-columns:180px 220px 1fr 180px;gap:10px;align-items:end;margin-top:10px}.daily-report-controls label{margin:0}.daily-cancel-check{align-self:center}.daily-report-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0}.daily-stat{background:#f8fafc;border:1px solid #e5e7eb;border-radius:14px;padding:12px}.daily-stat span{display:block;color:#667085}.daily-stat strong{font-size:24px}.canceled-row{background:#fff1f2;color:#991b1b}@media(max-width:760px){.daily-report-controls,.daily-report-summary{grid-template-columns:1fr}}
+
+/* v8 관리자 탭 정리 */
+.admin-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;position:sticky;top:0;z-index:5}
+.admin-tab{background:#eef2f7;color:#334155;border:0;border-radius:999px;padding:10px 14px;font-weight:900}
+.admin-tab.active{background:#123c69;color:white}
+.admin-panel{display:none}
+.admin-panel.active{display:block}
+.admin-dashboard-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:12px 0 18px}
+.dash-card{background:#f8fafc;border:1px solid #e5e7eb;border-radius:16px;padding:14px}
+.dash-card span{display:block;color:#667085;font-size:14px;font-weight:800}
+.dash-card strong{display:block;font-size:28px;margin:4px 0;color:#123c69}
+.dash-card small{color:#667085}
+.admin-todo-list{display:grid;gap:8px;margin-top:10px}
+.todo-item{background:#fff7ed;border:1px solid #fed7aa;color:#7c2d12;border-radius:12px;padding:10px 12px;font-weight:800}
+.todo-item.done{background:#ecfdf5;border-color:#bbf7d0;color:#166534}
+@media(max-width:760px){.admin-tabs{position:static}.admin-tab{flex:1 1 calc(50% - 8px);font-size:13px;padding:10px 8px}.admin-dashboard-grid{grid-template-columns:repeat(2,1fr)}}
