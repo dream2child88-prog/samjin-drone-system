@@ -11,7 +11,7 @@ let remoteLoading = false;
 let remoteSaveTimer = null;
 let remoteSavePending = false;
 let remoteChannel = null;
-const APP_VERSION = 'v4-sync-lock';
+const APP_VERSION = 'v5-contact-safe';
 const NOTE_VAULT_STORAGE_KEY = LS + 'note_vault_v1';
 let noteVault = loadRawNoteVault();
 try {
@@ -85,6 +85,38 @@ function mergeNoteVersions(localR, remoteR){
   migrateNoteVersions(remoteR);
   if((localR.noteVersions||[]).length > (remoteR.noteVersions||[]).length){ remoteR.history=Array.isArray(remoteR.history)?remoteR.history:[]; remoteR.history.push({type:'특이사항 병합 보호', user:'시스템', at:now(), text:'서버 동기화 중 로컬 특이사항 이력을 보존했습니다.'}); }
 }
+function mergeHistoryArrays(a,b){
+  const byKey=new Map();
+  [...(a||[]), ...(b||[])].forEach(x=>{
+    if(!x) return;
+    const key=[x.type||'',x.user||'',x.at||'',x.text||''].join('|');
+    byKey.set(key, cloneObj(x));
+  });
+  return [...byKey.values()].sort((x,y)=>String(x.at||'').localeCompare(String(y.at||''),'ko'));
+}
+function contactKey(x){ return [x.userId||'',x.user||'',x.at||'',x.role||''].join('|'); }
+function mergeContactLists(localR, remoteR){
+  if(!Array.isArray(localR.completedList)) localR.completedList = localR.completedBy ? [{user:localR.completedBy, at:localR.completedAt || '', canceled:false}] : [];
+  if(!Array.isArray(remoteR.completedList)) remoteR.completedList = remoteR.completedBy ? [{user:remoteR.completedBy, at:remoteR.completedAt || '', canceled:false}] : [];
+  const byKey=new Map();
+  [...remoteR.completedList, ...localR.completedList].forEach(x=>{
+    if(!x) return;
+    const key=contactKey(x);
+    const prev=byKey.get(key);
+    if(!prev || String(x.cancelAt||x.at||'') >= String(prev.cancelAt||prev.at||'')) byKey.set(key, cloneObj(x));
+  });
+  remoteR.completedList=[...byKey.values()].sort((a,b)=>String(a.at||'').localeCompare(String(b.at||''),'ko'));
+  syncContactSummary(remoteR);
+}
+function mergeRoundData(localR, remoteR){
+  if(!localR || !remoteR) return;
+  mergeNoteVersions(localR, remoteR);
+  mergeContactLists(localR, remoteR);
+  remoteR.history=mergeHistoryArrays(remoteR.history, localR.history);
+  if(localR.briefingChecklist && typeof localR.briefingChecklist==='object'){
+    remoteR.briefingChecklist={...(remoteR.briefingChecklist||{}), ...localR.briefingChecklist};
+  }
+}
 function mergeRemoteVillages(remoteVillages, localVillages){
   const localMap=new Map((localVillages||[]).map(v=>[v.id,v]));
   const merged=(remoteVillages||[]).map(rv=>{
@@ -95,7 +127,7 @@ function mergeRemoteVillages(remoteVillages, localVillages){
         out.roundsByYear[year]=out.roundsByYear[year]||{};
         Object.keys(lv.roundsByYear[year]||{}).forEach(round=>{
           out.roundsByYear[year][round]=out.roundsByYear[year][round]||blank();
-          mergeNoteVersions(lv.roundsByYear[year][round], out.roundsByYear[year][round]);
+          mergeRoundData(lv.roundsByYear[year][round], out.roundsByYear[year][round]);
         });
       });
     }
@@ -253,7 +285,7 @@ function drawDialog(v){
   const h=[...(r.history||[]), ...chiefLogs].sort((a,b)=>String(b.at).localeCompare(String(a.at),'ko'));
   $('historyList').innerHTML=h.length?h.map(x=>`<div class="history-item"><strong>${safe(x.type)}</strong> - ${safe(x.user)}<time>${safe(x.at)}</time><div>${safe(x.text||'')}</div></div>`).join(''):'<p class="muted">아직 기록이 없습니다.</p>';
 }
-function completeContact(){ const v=villages.find(x=>x.id===selectedVillageId); if(!v) return alert('마을을 다시 선택하세요.'); const r=rec(v); syncChecklistFromDialog(); if(!isBriefingChecklistComplete(r)){ return alert('필수 확인 체크리스트를 모두 확인해야 연락완료를 기록할 수 있습니다.'); } const at=now(); const list=allContactEntries(r); if(activeContactEntries(r).some(x=>x.userId===currentUser.id)){ return alert('이미 이 차수에서 연락완료 기록이 있습니다. 추가 연락자는 다른 계정으로 기록해 주세요.'); } list.push({user:currentUser.name, userId:currentUser.id, role:currentUser.role, at, canceled:false}); syncContactSummary(r); r.history.push({type:'연락 완료',user:currentUser.name,at,text:`${selectedRound} / ${v.eup} ${v.village} / 담당 추가: ${currentUser.name}`}); save('villages',villages); drawDialog(v); renderContact(); alert('연락완료가 기록되었습니다.'); }
+async function completeContact(){ const v=villages.find(x=>x.id===selectedVillageId); if(!v) return alert('마을을 다시 선택하세요.'); const r=rec(v); syncChecklistFromDialog(); if(!isBriefingChecklistComplete(r)){ return alert('필수 확인 체크리스트를 모두 확인해야 연락완료를 기록할 수 있습니다.'); } const at=now(); const list=allContactEntries(r); if(activeContactEntries(r).some(x=>x.userId===currentUser.id)){ return alert('이미 이 차수에서 연락완료 기록이 있습니다. 추가 연락자는 다른 계정으로 기록해 주세요.'); } list.push({user:currentUser.name, userId:currentUser.id, role:currentUser.role, at, canceled:false}); syncContactSummary(r); r.history.push({type:'연락 완료',user:currentUser.name,at,text:`${selectedRound} / ${v.eup} ${v.village} / 담당 추가: ${currentUser.name}`}); save('villages',villages); drawDialog(v); renderContact(); const ok = supabaseClient ? await saveRemoteNow(true) : true; if(!ok) return alert('이 기기에는 기록했지만 서버 저장에 실패했습니다. 인터넷 연결을 확인한 뒤 다시 저장해 주세요.'); alert('연락완료가 기록되었습니다.'); }
 function cancelContact(key){ if(currentUser.role!=='admin') return alert('관리자만 연락완료를 취소할 수 있습니다.'); const [round, idxText]=String(key).split('|'); const idx=Number(idxText); const v=villages.find(x=>x.id===selectedVillageId); if(!v) return alert('마을을 다시 선택하세요.'); const r=rec(v,round); const item=allContactEntries(r)[idx]; if(!item || item.canceled) return alert('취소할 연락완료 기록을 찾지 못했습니다.'); const reason=prompt('취소 사유를 입력하세요.', '잘못 누름') || '사유 미입력'; item.canceled=true; item.cancelBy=currentUser.name; item.cancelAt=now(); item.cancelReason=reason; syncContactSummary(r); r.history.push({type:'연락완료 취소',user:currentUser.name,at:item.cancelAt,text:`${round} / ${v.eup} ${v.village} / ${item.user} 기록 취소 / ${reason}`}); save('villages',villages); drawDialog(v); renderContact(); alert('취소 이력으로 기록되었습니다.'); }
 function vcardEscape(s){ return String(s||'').replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\n/g,'\\n'); }
 function downloadBlob(filename, content, type){ const blob=new Blob([content],{type}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=filename; document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href); a.remove();},0); }
